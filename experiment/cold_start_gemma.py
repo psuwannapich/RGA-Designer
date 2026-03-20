@@ -323,7 +323,12 @@ async def main():
     print(f"  python experiment/finetune_gsm8k.py --data_dir {args.output_dir} --dataset {args.dataset}")
 
 
-if __name__ == "__main__":
+def main_cli():
+    """Entry point for `uv run cold-start` (defined in pyproject.toml)."""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    main_cli()
