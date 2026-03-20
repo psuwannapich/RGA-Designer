@@ -11,8 +11,9 @@ from mas_framework.llm.llm_registry import LLMRegistry
 
 
 load_dotenv()
-MINE_BASE_URL = ""
-MINE_API_KEY = ""
+import os
+LOCAL_BASE_URL = os.getenv("LOCAL_BASE_URL", "http://localhost:11434/v1")
+LOCAL_API_KEY = os.getenv("LOCAL_API_KEY", "ollama")
 from openai import OpenAI, AsyncOpenAI
 
 
@@ -24,7 +25,7 @@ async def achat(
         temperature: Optional[float] = 0.2,
         num_comps: Optional[int] = 1,
 ):
-    client = AsyncOpenAI(base_url=MINE_BASE_URL, api_key=MINE_API_KEY, )
+    client = AsyncOpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
     chat_completion = await client.chat.completions.create(messages=msg, model=model, max_tokens=max_tokens,
                                                            temperature=temperature)
 

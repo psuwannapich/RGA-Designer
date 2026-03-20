@@ -15,14 +15,16 @@ class LLMRegistry:
     def keys(cls):
         return cls.registry.keys()
 
+    DEFAULT_LOCAL_MODEL = "llama3.2"
+
     @classmethod
     def get(cls, model_name: Optional[str] = None) -> LLM:
-        if model_name is None or model_name=="":
-            model_name = "gpt-4o"
+        if model_name is None or model_name == "":
+            model_name = cls.DEFAULT_LOCAL_MODEL
 
         if model_name == 'mock':
             model = cls.registry.get(model_name)
-        elif model_name[0:3] == 'gpt': # any version of GPTChat like "gpt-4o"
+        else:
             model = cls.registry.get('GPTChat', model_name)
 
         return model

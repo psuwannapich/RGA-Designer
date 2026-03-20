@@ -4,8 +4,11 @@ import tiktoken
 # GPT3.5: https://platform.openai.com/docs/models/gpt-3-5
 # DALL-E: https://openai.com/pricing
 
-def cal_token(model:str, text:str):
-    encoder = tiktoken.encoding_for_model(model)
+def cal_token(model: str, text: str):
+    try:
+        encoder = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoder = tiktoken.get_encoding("cl100k_base")
     num_tokens = len(encoder.encode(text))
     return num_tokens
 
