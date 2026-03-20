@@ -49,6 +49,9 @@ dependencies = [
     "astunparse",
     # Web server
     "fastapi",
+    # HuggingFace direct inference (HPC / Slurm — no Ollama server required)
+    "transformers>=4.40.0",
+    "accelerate>=0.30.0",
 ]
 
 [dependency-groups]

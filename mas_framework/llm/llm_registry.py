@@ -24,7 +24,13 @@ class LLMRegistry:
 
         if model_name == 'mock':
             model = cls.registry.get(model_name)
+        elif '/' in model_name:
+            # HuggingFace Hub model ID (e.g. "google/gemma-3-4b-it")
+            # Import here to trigger the @LLMRegistry.register("HFChat") decorator
+            import mas_framework.llm.hf_chat  # noqa: F401
+            model = cls.registry.get('HFChat', model_name)
         else:
+            # Ollama-style short name (e.g. "gemma3", "llama3.2")
             model = cls.registry.get('GPTChat', model_name)
 
         return model
