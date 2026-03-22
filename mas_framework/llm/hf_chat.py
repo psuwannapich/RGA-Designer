@@ -12,7 +12,6 @@ Pass a HuggingFace Hub model ID (must contain a '/') as the model name, e.g.
     "meta-llama/Llama-3.2-3B-Instruct"
 
 The model is loaded in bfloat16 on CUDA when available, else float32 on CPU.
-Set the environment variable HF_MODEL_CACHE to override the default cache dir.
 """
 
 from __future__ import annotations

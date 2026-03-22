@@ -63,7 +63,6 @@ NUM_ROUNDS="${NUM_ROUNDS:-1}"
 MIN_AGENTS="${MIN_AGENTS:-3}"
 MAX_AGENTS="${MAX_AGENTS:-4}"
 SEED="${SEED:-42}"
-export HF_MODEL_CACHE="${HF_MODEL_CACHE:-$HOME/.cache/huggingface}"
 
 # ---- Select this task's dataset -------------------------------------------
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"

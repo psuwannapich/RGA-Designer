@@ -37,9 +37,6 @@ MAX_AGENTS="${MAX_AGENTS:-4}"
 OUTPUT_DIR="${OUTPUT_DIR:-ColdStartData_hf_${DATASET}}"
 SEED="${SEED:-42}"
 
-# Optional: point to a shared model cache on the cluster's scratch filesystem
-# export HF_MODEL_CACHE=/scratch/$USER/hf_cache
-export HF_MODEL_CACHE="${HF_MODEL_CACHE:-$HOME/.cache/huggingface}"
 
 # ---------------------------------------------------------------------------
 mkdir -p logs

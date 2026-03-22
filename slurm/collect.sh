@@ -36,8 +36,6 @@ PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-20}"
 SEED="${SEED:-42}"
 
-export HF_MODEL_CACHE="${HF_MODEL_CACHE:-$HOME/.cache/huggingface}"
-
 mkdir -p logs
 
 echo "========================================"

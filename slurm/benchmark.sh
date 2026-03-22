@@ -68,7 +68,6 @@ HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
-export HF_MODEL_CACHE="${HF_MODEL_CACHE:-$HOME/.cache/huggingface}"
 
 # Absolute project root (directory containing this script's parent)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
