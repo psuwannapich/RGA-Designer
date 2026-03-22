@@ -1,0 +1,104 @@
+#!/bin/bash
+#SBATCH --job-name=arg_cold_start_all
+#SBATCH --output=logs/cold_start_%A_%a.out
+#SBATCH --error=logs/cold_start_%A_%a.err
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:1
+#SBATCH --time=12:00:00
+#SBATCH --array=0-5          # one task per dataset (see table below)
+# Adjust partition to match your HPC cluster (e.g. --partition=gpu)
+# #SBATCH --partition=gpu
+
+# ---------------------------------------------------------------------------
+# Cold-start dataset generation for ALL supported datasets.
+#
+# Array index → dataset mapping:
+#   0  gsm8k      datasets/gsm8k/gsm8k.jsonl
+#   1  aqua       datasets/AQuA/AQuA.jsonl
+#   2  multiarith datasets/MultiArith/MultiArith.json
+#   3  svamp      datasets/SVAMP/SVAMP.json
+#   4  humaneval  datasets/humaneval/humaneval-py.jsonl
+#   5  mmlu       datasets/MMLU/data  (CSV dir; auto-downloaded if missing)
+#
+# Usage — submit all six jobs in parallel:
+#   sbatch slurm/cold_start_all.sh
+#
+# Submit a subset (e.g. only math datasets):
+#   sbatch --array=0-3 slurm/cold_start_all.sh
+#
+# Submit a single dataset by index (e.g. mmlu only):
+#   sbatch --array=5 slurm/cold_start_all.sh
+#
+# Override global defaults before submitting:
+#   HF_MODEL=Qwen/Qwen3-8B NUM_TASKS=40 sbatch slurm/cold_start_all.sh
+# ---------------------------------------------------------------------------
+
+set -euo pipefail
+
+# ---- Dataset registry (indices must match --array range above) ------------
+DATASETS=(
+    gsm8k        # 0
+    aqua         # 1
+    multiarith   # 2
+    svamp        # 3
+    humaneval    # 4
+    mmlu         # 5
+)
+JSONLS=(
+    "datasets/gsm8k/gsm8k.jsonl"            # 0
+    "datasets/AQuA/AQuA.jsonl"              # 1
+    "datasets/MultiArith/MultiArith.json"   # 2
+    "datasets/SVAMP/SVAMP.json"             # 3
+    "datasets/humaneval/humaneval-py.jsonl" # 4
+    "datasets/MMLU/data"                    # 5 — directory, not a single file
+)
+
+# ---- Global defaults (override via env vars) ------------------------------
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+NUM_TASKS="${NUM_TASKS:-40}"
+BATCH_SIZE="${BATCH_SIZE:-2}"
+NUM_ROUNDS="${NUM_ROUNDS:-1}"
+MIN_AGENTS="${MIN_AGENTS:-3}"
+MAX_AGENTS="${MAX_AGENTS:-4}"
+SEED="${SEED:-42}"
+export HF_MODEL_CACHE="${HF_MODEL_CACHE:-$HOME/.cache/huggingface}"
+
+# ---- Select this task's dataset -------------------------------------------
+DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
+DATASET_JSON="${JSONLS[$SLURM_ARRAY_TASK_ID]}"
+OUTPUT_DIR="ColdStartData_hf_${DATASET}"
+
+mkdir -p logs
+
+echo "========================================"
+echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
+echo "Node          : $SLURM_NODELIST"
+echo "HF Model      : $HF_MODEL"
+echo "Dataset       : $DATASET  ($NUM_TASKS tasks)"
+echo "Dataset JSON  : $DATASET_JSON"
+echo "Output dir    : $OUTPUT_DIR"
+echo "Started at    : $(date)"
+echo "========================================"
+
+# Download MMLU data if this is the mmlu job and the data dir is missing
+if [[ "$DATASET" == "mmlu" && ! -d "$DATASET_JSON/test" ]]; then
+    echo "MMLU data not found — running download script..."
+    uv run python datasets/MMLU/download.py
+    echo "MMLU download complete."
+fi
+
+uv run cold-start \
+    --dataset      "$DATASET" \
+    --dataset_json "$DATASET_JSON" \
+    --llm_name     "$HF_MODEL" \
+    --output_dir   "$OUTPUT_DIR" \
+    --num_tasks    "$NUM_TASKS" \
+    --batch_size   "$BATCH_SIZE" \
+    --num_rounds   "$NUM_ROUNDS" \
+    --min_agents   "$MIN_AGENTS" \
+    --max_agents   "$MAX_AGENTS" \
+    --seed         "$SEED"
+
+echo "Finished at: $(date)"

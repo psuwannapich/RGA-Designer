@@ -16,14 +16,14 @@
 #   sbatch slurm/collect.sh
 #
 # Override defaults with env vars before submitting:
-#   HF_MODEL=google/gemma-3-4b-it
+#   HF_MODEL=Qwen/Qwen3-8B
 #   NUM_TASKS=100
 #   PREFERENCE_DIR=rlhf_data/gsm8k
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
 
-HF_MODEL="${HF_MODEL:-google/gemma-3-4b-it}"
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 DATASET_JSON="${DATASET_JSON:-datasets/gsm8k/gsm8k.jsonl}"
 NUM_TASKS="${NUM_TASKS:-100}"
 PREFERENCE_DIR="${PREFERENCE_DIR:-rlhf_data/gsm8k}"

@@ -1,5 +1,6 @@
 """
-Cold-start dataset generator using a local Gemma model (via Ollama).
+Cold-start dataset generator using a local Gemma model (via Ollama) or a
+HuggingFace model (via HFChat, suitable for HPC / Slurm).
 
 Generates agent-graph training data for autoregressive graph generation.
 For each task, several graph topologies are tried; graphs that correctly
@@ -14,8 +15,9 @@ Usage:
         --num_tasks 40 \
         --batch_size 2
 
-Supported datasets: gsm8k, aqua
-Supported Ollama models: gemma3, gemma:2b, gemma:7b, llama3.2, etc.
+Supported datasets: gsm8k, aqua, multiarith, svamp, humaneval
+Supported models  : any Ollama short name (gemma3, llama3.2, ...)
+                    any HuggingFace Hub ID  (Qwen/Qwen3-8B, ...)
 """
 
 import os
@@ -41,6 +43,12 @@ from experiment.utils import get_kwargs, save_graph_with_features
 # Dataset helpers
 # ---------------------------------------------------------------------------
 
+_MATH_DATASETS = {'gsm8k', 'multiarith', 'svamp'}
+_MCQ_DATASETS  = {'aqua', 'mmlu'}
+_CODE_DATASETS = {'humaneval'}
+_ALL_DATASETS  = _MATH_DATASETS | _MCQ_DATASETS | _CODE_DATASETS
+
+
 def _load_dataset(dataset: str, dataset_json: str):
     if dataset == 'gsm8k':
         from datasets.gsm8k_dataset import gsm_data_process
@@ -50,43 +58,85 @@ def _load_dataset(dataset: str, dataset_json: str):
         from datasets.aqua_dataset import aqua_data_process
         raw = JSONLReader.parse_file(dataset_json)
         return aqua_data_process(raw)
+    elif dataset == 'multiarith':
+        from datasets.gsm8k_dataset import multiarith_data_process
+        with open(dataset_json, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return multiarith_data_process(raw)
+    elif dataset == 'svamp':
+        from datasets.gsm8k_dataset import svamp_data_process
+        with open(dataset_json, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return svamp_data_process(raw)
+    elif dataset == 'humaneval':
+        from datasets.humaneval_dataset import humaneval_data_process
+        raw = JSONLReader.parse_file(dataset_json)
+        return humaneval_data_process(raw)
+    elif dataset == 'mmlu':
+        from datasets.MMLU.download import download as mmlu_download
+        from datasets.mmlu_dataset import mmlu_data_process
+        mmlu_download()   # no-op if already downloaded
+        return mmlu_data_process(dataset_json, split='test')
     else:
-        raise ValueError(f"Unsupported dataset: {dataset}. Choose 'gsm8k' or 'aqua'.")
+        raise ValueError(f"Unsupported dataset: {dataset!r}. Choose from: {sorted(_ALL_DATASETS)}")
 
 
 def _get_predict(dataset: str, pred_str: str) -> str:
-    if dataset == 'gsm8k':
+    if dataset in _MATH_DATASETS:
         from datasets.gsm8k_dataset import gsm_get_predict
         return gsm_get_predict(pred_str)
     elif dataset == 'aqua':
         from datasets.aqua_dataset import aqua_get_predict
         return aqua_get_predict(pred_str)
+    elif dataset == 'mmlu':
+        from datasets.mmlu_dataset import mmlu_get_predict
+        return mmlu_get_predict(pred_str)
+    elif dataset in _CODE_DATASETS:
+        from datasets.humaneval_dataset import humaneval_get_predict
+        return humaneval_get_predict(pred_str)
+    return pred_str
 
 
 def _is_correct(dataset: str, predicted: str, true_answer: str) -> bool:
-    if dataset == 'gsm8k':
+    if dataset in _MATH_DATASETS:
         try:
             return float(predicted) == float(true_answer)
         except (ValueError, TypeError):
             return False
-    elif dataset == 'aqua':
+    elif dataset in _MCQ_DATASETS:
         return predicted.strip().upper() == true_answer.strip().upper()
+    elif dataset in _CODE_DATASETS:
+        # true_answer is the test suite; predicted is the extracted code
+        from mas_framework.tools.coding.python_executor import PyExecutor
+        executor = PyExecutor()
+        is_solved, _, _ = executor.execute(predicted, [true_answer], timeout=10)
+        return bool(is_solved)
     return False
 
 
 def _get_role_description(dataset: str) -> dict:
-    if dataset == 'gsm8k':
+    if dataset in _MATH_DATASETS:
         from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
     elif dataset == 'aqua':
         from experiment.aqua.aqua_prompt_set import ROLE_DESCRIPTION
+    elif dataset == 'mmlu':
+        from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
+    elif dataset in _CODE_DATASETS:
+        from experiment.humaneval.humaneval_prompt_set import ROLE_DESCRIPTION
     return ROLE_DESCRIPTION
 
 
 def _get_agent_name(dataset: str) -> str:
+    if dataset in _CODE_DATASETS:
+        return 'CodeWriting'
+    if dataset == 'mmlu':
+        return 'AnalyzeAgent'
     return 'MathSolver'
 
 
 def _get_decision_method(dataset: str) -> str:
+    if dataset in _CODE_DATASETS:
+        return 'FinalWriteCode'
     return 'FinalRefer'
 
 
@@ -224,7 +274,7 @@ def parse_args():
         description="Generate cold-start graph data using a local Gemma model (Ollama)"
     )
     parser.add_argument('--dataset', type=str, default='gsm8k',
-                        choices=['gsm8k', 'aqua'],
+                        choices=sorted(_ALL_DATASETS),
                         help='Task dataset name')
     parser.add_argument('--dataset_json', type=str,
                         default='datasets/gsm8k/gsm8k.jsonl',

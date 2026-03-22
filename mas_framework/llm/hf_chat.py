@@ -8,7 +8,7 @@ all subsequent requests.
 Model naming convention
 -----------------------
 Pass a HuggingFace Hub model ID (must contain a '/') as the model name, e.g.
-    "google/gemma-3-4b-it"
+    "Qwen/Qwen3-8B"
     "meta-llama/Llama-3.2-3B-Instruct"
 
 The model is loaded in bfloat16 on CUDA when available, else float32 on CPU.

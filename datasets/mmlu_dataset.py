@@ -1,8 +1,62 @@
+import csv
 import glob
-import pandas as pd
-from typing import Union, List, Literal, Any, Dict
+import os
+import re
+
 import numpy as np
+import pandas as pd
 from abc import ABC
+from typing import Union, List, Literal, Any, Dict
+
+
+def mmlu_data_process(data_dir: str, split: str = "test") -> list:
+    """
+    Load MMLU CSV files and return a flat list of {task, answer} dicts
+    compatible with cold_start_gemma.py.
+
+    Parameters
+    ----------
+    data_dir : path to the MMLU data root (contains test/, val/, dev/ sub-dirs)
+    split    : which split to load ('test', 'val', or 'dev')
+    """
+    split_path = os.path.join(data_dir, split)
+    csv_files = sorted(glob.glob(os.path.join(split_path, "*.csv")))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"No CSV files found in '{split_path}'. "
+            "Run: python datasets/MMLU/download.py"
+        )
+
+    records = []
+    for path in csv_files:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 6:
+                    continue
+                question, a, b, c, d, answer = (
+                    row[0], row[1], row[2], row[3], row[4], row[5]
+                )
+                task = (
+                    f"{question}\n"
+                    f"Option A: {a}\n"
+                    f"Option B: {b}\n"
+                    f"Option C: {c}\n"
+                    f"Option D: {d}"
+                )
+                records.append({"task": task, "answer": answer.strip().upper()})
+    return records
+
+
+def mmlu_get_predict(pred_str: str) -> str:
+    """Extract a single capital letter answer (A/B/C/D) from an LLM response."""
+    # Look for explicit "answer is X" pattern first
+    match = re.search(r"answer\s+is\s*:?\s*(?:Option\s+)?([A-D])", pred_str, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    # Fall back to last capital letter found
+    letters = re.findall(r"\b([A-D])\b", pred_str)
+    return letters[-1].upper() if letters else ""
 
 
 class MMLUDataset(ABC):

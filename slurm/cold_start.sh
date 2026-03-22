@@ -17,7 +17,7 @@
 #   sbatch slurm/cold_start.sh
 #
 # Override defaults with env vars before submitting:
-#   HF_MODEL=google/gemma-3-4b-it
+#   HF_MODEL=Qwen/Qwen3-8B
 #   DATASET=gsm8k
 #   NUM_TASKS=40
 #   OUTPUT_DIR=ColdStartData_gemma_gsm8k
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # ---- User-configurable defaults -------------------------------------------
-HF_MODEL="${HF_MODEL:-google/gemma-3-4b-it}"
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 DATASET="${DATASET:-gsm8k}"
 DATASET_JSON="${DATASET_JSON:-datasets/${DATASET}/${DATASET}.jsonl}"
 NUM_TASKS="${NUM_TASKS:-40}"
