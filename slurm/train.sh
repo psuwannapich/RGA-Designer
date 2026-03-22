@@ -8,7 +8,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
-#SBATCH -C volta32
 #SBATCH --time=2-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu

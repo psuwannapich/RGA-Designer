@@ -15,6 +15,8 @@
 #   EPOCHS            ARGDesigner training epochs           (default: 100)
 #   EVAL_BATCH        benchmark inference batch size        (default: 8)
 #   DATASETS_ARRAY    Slurm array spec, e.g. "0-2" or "0,3" (default: 0-5 = all)
+#   NUM_GPUS          GPUs per job for LLM stages           (default: 2, train always uses 1)
+#                     Use 2+ V100-16GB instead of 1 V100-32GB
 #
 # Example — run only gsm8k (index 0):
 #   DATASETS_ARRAY=0 bash slurm/run_pipeline.sh
@@ -31,6 +33,7 @@ NUM_TASKS="${NUM_TASKS:-0}"
 EPOCHS="${EPOCHS:-100}"
 EVAL_BATCH="${EVAL_BATCH:-8}"
 DATASETS_ARRAY="${DATASETS_ARRAY:-0-5}"
+NUM_GPUS="${NUM_GPUS:-2}"    # GPUs for LLM stages; train always uses 1
 
 COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData_hf}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
@@ -44,6 +47,7 @@ echo "Model         : $HF_MODEL"
 echo "Datasets array: $DATASETS_ARRAY"
 echo "Cold-start tasks per dataset: ${NUM_TASKS} (0 = all base tasks)"
 echo "Training epochs: $EPOCHS"
+echo "GPUs per LLM job: $NUM_GPUS  (train stage always uses 1)"
 echo "================================================"
 
 # ---- Stage 1: Cold-start ---------------------------------------------------
@@ -51,6 +55,7 @@ echo ""
 echo "[Stage 1] Submitting cold-start jobs (array: $DATASETS_ARRAY) ..."
 COLD_JOB=$(sbatch \
     --array="$DATASETS_ARRAY" \
+    --gres="gpu:${NUM_GPUS}" \
     --export=ALL,HF_MODEL="$HF_MODEL",NUM_TASKS="$NUM_TASKS" \
     "$PROJECT_ROOT/slurm/cold_start_all.sh" \
     | awk '{print $NF}')
@@ -62,6 +67,7 @@ echo "[Stage 2] Submitting training jobs (depends on cold-start $COLD_JOB) ..."
 TRAIN_JOB=$(sbatch \
     --array="$DATASETS_ARRAY" \
     --dependency=afterok:"$COLD_JOB" \
+    --gres="gpu:1" \
     --export=ALL,COLD_START_ROOT="$COLD_START_ROOT",CHECKPOINT_ROOT="$CHECKPOINT_ROOT",EPOCHS="$EPOCHS" \
     "$PROJECT_ROOT/slurm/train.sh" \
     | awk '{print $NF}')
@@ -83,9 +89,8 @@ cat > "$BENCH_WRAPPER" << WRAPPER_EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:${NUM_GPUS}
 #SBATCH -p gpu
-#SBATCH -C volta32
 #SBATCH --time=2-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
@@ -104,6 +109,7 @@ WRAPPER_EOF
 BENCH_JOB=$(sbatch \
     --array="$DATASETS_ARRAY" \
     --dependency=afterok:"$TRAIN_JOB" \
+    --gres="gpu:${NUM_GPUS}" \
     "$BENCH_WRAPPER" \
     | awk '{print $NF}')
 echo "  Benchmark job ID: $BENCH_JOB"

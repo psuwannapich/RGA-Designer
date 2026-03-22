@@ -5,10 +5,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --array=0-5          # one task per dataset (see table below)
 #SBATCH -p gpu
-#SBATCH -C volta32
 #SBATCH --time=2-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
