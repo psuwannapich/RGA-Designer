@@ -57,20 +57,29 @@ JSONLS=(
     "datasets/MMLU/data"                    # 5 — directory, not a single file
 )
 
+# Per-dataset agent counts (from original cold-start scripts)
+#   gsm8k/aqua/multiarith/svamp: max 4  (range 3-4)
+#   humaneval:                   max 5  (range 3-5)
+#   mmlu:                        max 6  (range 3-6)
+DATASET_MIN_AGENTS=(3 3 3 3 3 3)   # index: 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
+DATASET_MAX_AGENTS=(4 4 4 4 5 6)   # index: 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
+
 # ---- Global defaults (override via env vars) ------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 NUM_TASKS="${NUM_TASKS:-0}"
 NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
-MIN_AGENTS="${MIN_AGENTS:-3}"
-MAX_AGENTS="${MAX_AGENTS:-4}"
 SEED="${SEED:-42}"
 
 # ---- Select this task's dataset -------------------------------------------
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 DATASET_JSON="${JSONLS[$SLURM_ARRAY_TASK_ID]}"
 OUTPUT_DIR="ColdStartData_hf_${DATASET}"
+
+# Per-dataset agent range (env vars override if set)
+MIN_AGENTS="${MIN_AGENTS:-${DATASET_MIN_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
+MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 
 mkdir -p logs
 
@@ -81,6 +90,7 @@ echo "HF Model      : $HF_MODEL"
 echo "Dataset       : $DATASET  (num_tasks=${NUM_TASKS}, 0=all base tasks)"
 echo "Dataset JSON  : $DATASET_JSON"
 echo "Output dir    : $OUTPUT_DIR"
+echo "Agents        : min=$MIN_AGENTS  max=$MAX_AGENTS"
 echo "Started at    : $(date)"
 echo "========================================"
 
