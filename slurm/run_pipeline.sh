@@ -81,7 +81,7 @@ cat > "$BENCH_WRAPPER" << WRAPPER_EOF
 #SBATCH --output=$PROJECT_ROOT/logs/bench_pipeline_%A_%a.out
 #SBATCH --error=$PROJECT_ROOT/logs/bench_pipeline_%A_%a.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH -p gpu

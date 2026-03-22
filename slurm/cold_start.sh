@@ -4,7 +4,7 @@
 #SBATCH --output=logs/cold_start_%j.out
 #SBATCH --error=logs/cold_start_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH -C volta32
 #SBATCH --gres=gpu:1

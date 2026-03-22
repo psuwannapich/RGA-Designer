@@ -3,7 +3,7 @@
 #SBATCH --output=logs/collect_%j.out
 #SBATCH --error=logs/collect_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH -p gpu

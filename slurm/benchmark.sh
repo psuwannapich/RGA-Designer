@@ -3,7 +3,7 @@
 #SBATCH --output=logs/benchmark_%A_%a.out
 #SBATCH --error=logs/benchmark_%A_%a.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k  1=aqua  2=humaneval  3=mmlu  4=multiarith  5=svamp
