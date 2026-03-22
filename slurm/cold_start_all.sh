@@ -6,10 +6,12 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
 #SBATCH --array=0-5          # one task per dataset (see table below)
-# Adjust partition to match your HPC cluster (e.g. --partition=gpu)
-# #SBATCH --partition=gpu
+#SBATCH -p gpu
+#SBATCH -C volta32
+#SBATCH --time=2-00:00:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 
 # ---------------------------------------------------------------------------
 # Cold-start dataset generation for ALL supported datasets.

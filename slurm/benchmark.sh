@@ -6,10 +6,12 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
 #SBATCH --array=0-5          # 0=gsm8k  1=aqua  2=humaneval  3=mmlu  4=multiarith  5=svamp
-# #SBATCH --partition=gpu
-
+#SBATCH -p gpu
+#SBATCH -C volta32
+#SBATCH --time=2-00:00:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 # ---------------------------------------------------------------------------
 # Benchmark ARG-Designer on all supported datasets using a local model.
 #
