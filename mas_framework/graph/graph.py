@@ -480,8 +480,10 @@ class TestGraph(ABC):
             agent_type = 'CodeWriting'
         elif self.domain == 'gsm8k':
             agent_type = 'MathSolver'
-        elif self.domain == 'aqua':
+        elif self.domain in ('aqua', 'multiarith', 'svamp'):
             agent_type = 'MathSolver'
+        else:
+            agent_type = 'MathSolver'  # safe default for unknown math domains
         prompt_set = PromptSetRegistry.get(self.domain)
 
         for idx, (role, constraint) in enumerate(zip(roles, constraints)):
