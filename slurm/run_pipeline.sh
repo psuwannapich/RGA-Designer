@@ -10,7 +10,7 @@
 #
 # Optional env vars (passed through to each stage):
 #   HF_MODEL          HuggingFace model ID or Ollama name  (default: Qwen/Qwen3-8B)
-#   NUM_TASKS         cold-start tasks per dataset          (default: 40)
+#   NUM_TASKS         cold-start tasks per dataset          (default: 0)
 #   NUM_ITERATIONS    iterations for train/test split size  (default: 10)
 #   EPOCHS            ARGDesigner training epochs           (default: 100)
 #   EVAL_BATCH        benchmark inference batch size        (default: 8)
@@ -20,14 +20,14 @@
 #   DATASETS_ARRAY=0 bash slurm/run_pipeline.sh
 #
 # Example — custom model, more tasks:
-#   HF_MODEL=meta-llama/Llama-3.2-3B-Instruct NUM_TASKS=100 EPOCHS=200 \
+#   HF_MODEL=meta-llama/Llama-3.2-3B-Instruct NUM_TASKS=0 EPOCHS=200 \
 #       bash slurm/run_pipeline.sh
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
 
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
-NUM_TASKS="${NUM_TASKS:-40}"
+NUM_TASKS="${NUM_TASKS:-0}"
 EPOCHS="${EPOCHS:-100}"
 EVAL_BATCH="${EVAL_BATCH:-8}"
 DATASETS_ARRAY="${DATASETS_ARRAY:-0-5}"
@@ -42,7 +42,7 @@ echo "================================================"
 echo "ARG-Designer Full Pipeline"
 echo "Model         : $HF_MODEL"
 echo "Datasets array: $DATASETS_ARRAY"
-echo "Cold-start tasks per dataset: $NUM_TASKS"
+echo "Cold-start tasks per dataset: ${NUM_TASKS} (0 = all base tasks)"
 echo "Training epochs: $EPOCHS"
 echo "================================================"
 

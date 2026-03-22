@@ -12,7 +12,7 @@ Usage:
         --dataset_json datasets/gsm8k/gsm8k.jsonl \
         --llm_name gemma3 \
         --output_dir ColdStartData_gemma_gsm8k \
-        --num_tasks 40 \
+        --num_tasks 0 \
         --batch_size 2
 
 Supported datasets: gsm8k, aqua, multiarith, svamp, humaneval, mmlu
@@ -283,8 +283,8 @@ def parse_args():
                         help='Ollama model name (e.g. gemma3, gemma:2b, llama3.2)')
     parser.add_argument('--output_dir', type=str, default='ColdStartData_gemma',
                         help='Directory to save generated .pt graph files')
-    parser.add_argument('--num_tasks', type=int, default=40,
-                        help='Number of tasks to sample for cold-start generation')
+    parser.add_argument('--num_tasks', type=int, default=0,
+                        help='Number of tasks to sample for cold-start generation. 0 for using all data')
     parser.add_argument('--batch_size', type=int, default=2,
                         help='Async batch size (keep small for local models)')
     parser.add_argument('--num_rounds', type=int, default=1,
@@ -367,8 +367,12 @@ async def main():
                      finetune_task_indices, test_indices, project_root)
 
     # Cold-start generation uses only base_task_indices (not full dataset)
-    num_tasks = min(args.num_tasks, len(base_task_indices))
-    sampled_indices = random.sample(base_task_indices, num_tasks)
+    # num_tasks == 0 means "use all base tasks"
+    if args.num_tasks == 0:
+        sampled_indices = base_task_indices
+    else:
+        num_tasks = min(args.num_tasks, len(base_task_indices))
+        sampled_indices = random.sample(base_task_indices, num_tasks)
     sampled = [all_records[i] for i in sampled_indices]
     print(f"\nUsing {len(sampled)} base tasks for cold-start generation.")
 

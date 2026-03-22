@@ -34,7 +34,7 @@
 #   sbatch --array=5 slurm/cold_start_all.sh
 #
 # Override global defaults before submitting:
-#   HF_MODEL=Qwen/Qwen3-8B NUM_TASKS=40 sbatch slurm/cold_start_all.sh
+#   HF_MODEL=Qwen/Qwen3-8B NUM_TASKS=0 sbatch slurm/cold_start_all.sh
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -59,7 +59,7 @@ JSONLS=(
 
 # ---- Global defaults (override via env vars) ------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
-NUM_TASKS="${NUM_TASKS:-40}"
+NUM_TASKS="${NUM_TASKS:-0}"
 NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
@@ -78,7 +78,7 @@ echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
 echo "Node          : $SLURM_NODELIST"
 echo "HF Model      : $HF_MODEL"
-echo "Dataset       : $DATASET  ($NUM_TASKS tasks)"
+echo "Dataset       : $DATASET  (num_tasks=${NUM_TASKS}, 0=all base tasks)"
 echo "Dataset JSON  : $DATASET_JSON"
 echo "Output dir    : $OUTPUT_DIR"
 echo "Started at    : $(date)"

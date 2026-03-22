@@ -19,7 +19,7 @@
 #
 # Override defaults with env vars before submitting:
 #   HF_MODEL=Qwen/Qwen3-8B
-#   NUM_TASKS=100
+#   NUM_TASKS=0
 #   PREFERENCE_DIR=rlhf_data/gsm8k
 # ---------------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ set -euo pipefail
 
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 DATASET_JSON="${DATASET_JSON:-datasets/gsm8k/gsm8k.jsonl}"
-NUM_TASKS="${NUM_TASKS:-100}"
+NUM_TASKS="${NUM_TASKS:-0}"
 PREFERENCE_DIR="${PREFERENCE_DIR:-rlhf_data/gsm8k}"
 MIN_AGENTS="${MIN_AGENTS:-2}"
 MAX_AGENTS="${MAX_AGENTS:-4}"

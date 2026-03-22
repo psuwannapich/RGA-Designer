@@ -25,7 +25,7 @@
 # Override defaults with env vars before submitting:
 #   HF_MODEL=Qwen/Qwen3-8B
 #   DATASET=gsm8k
-#   NUM_TASKS=40
+#   NUM_TASKS=0
 #   OUTPUT_DIR=ColdStartData_gemma_gsm8k
 # ---------------------------------------------------------------------------
 
@@ -35,7 +35,7 @@ set -euo pipefail
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 DATASET="${DATASET:-gsm8k}"
 DATASET_JSON="${DATASET_JSON:-datasets/${DATASET}/${DATASET}.jsonl}"
-NUM_TASKS="${NUM_TASKS:-40}"
+NUM_TASKS="${NUM_TASKS:-0}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
 MIN_AGENTS="${MIN_AGENTS:-3}"
