@@ -60,6 +60,7 @@ JSONLS=(
 # ---- Global defaults (override via env vars) ------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 NUM_TASKS="${NUM_TASKS:-40}"
+NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
 MIN_AGENTS="${MIN_AGENTS:-3}"
@@ -91,15 +92,16 @@ if [[ "$DATASET" == "mmlu" && ! -d "$DATASET_JSON/test" ]]; then
 fi
 
 uv run cold-start \
-    --dataset      "$DATASET" \
-    --dataset_json "$DATASET_JSON" \
-    --llm_name     "$HF_MODEL" \
-    --output_dir   "$OUTPUT_DIR" \
-    --num_tasks    "$NUM_TASKS" \
-    --batch_size   "$BATCH_SIZE" \
-    --num_rounds   "$NUM_ROUNDS" \
-    --min_agents   "$MIN_AGENTS" \
-    --max_agents   "$MAX_AGENTS" \
-    --seed         "$SEED"
+    --dataset        "$DATASET" \
+    --dataset_json   "$DATASET_JSON" \
+    --llm_name       "$HF_MODEL" \
+    --output_dir     "$OUTPUT_DIR" \
+    --num_tasks      "$NUM_TASKS" \
+    --num_iterations "$NUM_ITERATIONS" \
+    --batch_size     "$BATCH_SIZE" \
+    --num_rounds     "$NUM_ROUNDS" \
+    --min_agents     "$MIN_AGENTS" \
+    --max_agents     "$MAX_AGENTS" \
+    --seed           "$SEED"
 
 echo "Finished at: $(date)"

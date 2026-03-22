@@ -11,6 +11,7 @@
 # Optional env vars (passed through to each stage):
 #   HF_MODEL          HuggingFace model ID or Ollama name  (default: Qwen/Qwen3-8B)
 #   NUM_TASKS         cold-start tasks per dataset          (default: 40)
+#   NUM_ITERATIONS    iterations for train/test split size  (default: 10)
 #   EPOCHS            ARGDesigner training epochs           (default: 100)
 #   EVAL_BATCH        benchmark inference batch size        (default: 8)
 #   DATASETS_ARRAY    Slurm array spec, e.g. "0-2" or "0,3" (default: 0-5 = all)

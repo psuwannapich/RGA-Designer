@@ -15,7 +15,7 @@ Usage:
         --num_tasks 40 \
         --batch_size 2
 
-Supported datasets: gsm8k, aqua, multiarith, svamp, humaneval
+Supported datasets: gsm8k, aqua, multiarith, svamp, humaneval, mmlu
 Supported models  : any Ollama short name (gemma3, llama3.2, ...)
                     any HuggingFace Hub ID  (Qwen/Qwen3-8B, ...)
 """
@@ -293,37 +293,84 @@ def parse_args():
                         help='Minimum number of agents per graph')
     parser.add_argument('--max_agents', type=int, default=4,
                         help='Maximum number of agents per graph')
+    parser.add_argument('--num_iterations', type=int, default=10,
+                        help='Number of training iterations (used to compute train/test split size)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Dataset split constants (mirrors original cold_start_gsm8k.py)
+# ---------------------------------------------------------------------------
+
+BASE_RATE = 0.4  # fraction of train set used for cold-start graph generation
+
+_TASK_SPLIT_DIRS = {
+    'gsm8k':      'experiment/gsm8k',
+    'aqua':       'experiment/aqua',
+    'multiarith': 'experiment/multiarith',
+    'svamp':      'experiment/svamp',
+    'humaneval':  'experiment/humaneval',
+    'mmlu':       'experiment/mmlu',
+}
+
+
+def _save_task_split(dataset: str, base_task_indices: list,
+                     finetune_task_indices: list, test_indices: list,
+                     project_root: str):
+    subdir = _TASK_SPLIT_DIRS.get(dataset, f'experiment/{dataset}')
+    split_dir = os.path.join(project_root, subdir)
+    os.makedirs(split_dir, exist_ok=True)
+    split_path = os.path.join(split_dir, f'task_split_{dataset}.json')
+    with open(split_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'base_tasks_indices':     base_task_indices,
+            'finetune_tasks_indices': finetune_task_indices,
+            'test_indices':           test_indices,
+        }, f)
+    print(f"Task split saved to: {split_path}")
+    print(f"  base (cold-start): {len(base_task_indices)}")
+    print(f"  finetune         : {len(finetune_task_indices)}")
+    print(f"  test             : {len(test_indices)}")
+    return split_path
 
 
 async def main():
     args = parse_args()
     random.seed(args.seed)
 
-    # Validate Ollama reachability early
-    import urllib.request
-    ollama_url = os.environ.get("LOCAL_BASE_URL", "http://localhost:11434/v1")
-    health_url = ollama_url.replace("/v1", "") + "/api/tags"
-    try:
-        with urllib.request.urlopen(health_url, timeout=5) as resp:
-            tags_data = json.loads(resp.read())
-            available = [m["name"] for m in tags_data.get("models", [])]
-            print(f"Ollama is running. Available models: {available}")
-            if args.llm_name not in available and not any(args.llm_name in m for m in available):
-                print(f"WARNING: model '{args.llm_name}' not found in Ollama. "
-                      f"Run: ollama pull {args.llm_name}")
-    except Exception as e:
-        print(f"WARNING: Could not reach Ollama at {health_url}: {e}")
-        print("Make sure Ollama is running: `ollama serve`")
+    # Resolve project root (one level above experiment/)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-    # Load and sample dataset
+    # Load full dataset
     print(f"\nLoading {args.dataset} dataset from {args.dataset_json} ...")
     all_records = _load_dataset(args.dataset, args.dataset_json)
-    num_tasks = min(args.num_tasks, len(all_records))
-    sampled = random.sample(all_records, num_tasks)
-    print(f"Sampled {num_tasks} tasks for cold-start generation.")
+    print(f"Total records: {len(all_records)}")
+
+    # ---- Train / test split (mirrors original cold_start_gsm8k.py) ----------
+    train_set_size = args.num_iterations * args.batch_size
+    train_set_size = min(train_set_size, len(all_records))
+
+    all_indices = list(range(len(all_records)))
+    train_indices = all_indices[:train_set_size]
+    test_indices  = all_indices[train_set_size:]
+
+    # Shuffle train to randomly assign base vs finetune
+    finetune_candidates = train_indices.copy()
+    random.shuffle(finetune_candidates)
+    base_task_count     = int(BASE_RATE * len(finetune_candidates))
+    base_task_indices   = finetune_candidates[:base_task_count]
+    finetune_task_indices = finetune_candidates[base_task_count:]
+
+    _save_task_split(args.dataset, base_task_indices,
+                     finetune_task_indices, test_indices, project_root)
+
+    # Cold-start generation uses only base_task_indices (not full dataset)
+    num_tasks = min(args.num_tasks, len(base_task_indices))
+    sampled_indices = random.sample(base_task_indices, num_tasks)
+    sampled = [all_records[i] for i in sampled_indices]
+    print(f"\nUsing {len(sampled)} base tasks for cold-start generation.")
 
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Output directory: {args.output_dir}\n")
@@ -334,7 +381,7 @@ async def main():
     decision_method = _get_decision_method(args.dataset)
     configs = get_configs(args.min_agents, args.max_agents)
 
-    print(f"LLM: {args.llm_name} (local Ollama)")
+    print(f"LLM: {args.llm_name}")
     print(f"Topologies: {configs}")
     print(f"Roles: {available_roles}\n")
 
@@ -370,7 +417,7 @@ async def main():
     print(f"\nDone. Total graphs saved: {solved_counter['total']}")
     print(f"Dataset saved to: {args.output_dir}/")
     print(f"\nTo train ARGDesigner on this data, run:")
-    print(f"  python experiment/finetune_gsm8k.py --data_dir {args.output_dir} --dataset {args.dataset}")
+    print(f"  python experiment/pretrain.py --dataset {args.dataset} --data_dir {args.output_dir} --output_dir checkpoints/{args.dataset}")
 
 
 def main_cli():
