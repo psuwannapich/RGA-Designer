@@ -1,2 +1,3 @@
 __pycache__
-ColdStartData_gemma_gsm8k/
+ColdStartData_hf*/
+logs/
