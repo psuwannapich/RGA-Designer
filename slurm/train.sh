@@ -63,7 +63,7 @@ SEED="${SEED:-42}"
 DATA_DIR="${COLD_START_ROOT}_${DATASET}"
 OUTPUT_DIR="${CHECKPOINT_ROOT}/${DATASET}"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 mkdir -p "$PROJECT_ROOT/logs"
 
 echo "========================================"

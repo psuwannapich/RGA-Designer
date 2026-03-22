@@ -71,7 +71,7 @@ LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
 
 # Absolute project root (directory containing this script's parent)
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 mkdir -p "$PROJECT_ROOT/logs"
 
