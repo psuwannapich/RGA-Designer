@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 from class_registry import ClassRegistry
 
@@ -25,10 +26,15 @@ class LLMRegistry:
         if model_name == 'mock':
             model = cls.registry.get(model_name)
         elif '/' in model_name:
-            # HuggingFace Hub model ID (e.g. "Qwen/Qwen3-8B")
-            # Import here to trigger the @LLMRegistry.register("HFChat") decorator
-            import mas_framework.llm.hf_chat  # noqa: F401
-            model = cls.registry.get('HFChat', model_name)
+            # HuggingFace Hub model ID (e.g. "Qwen/Qwen3-8B").
+            # Set USE_VLLM=1 to route through the vLLM backend instead of
+            # HuggingFace transformers for higher GPU utilisation.
+            if os.getenv('USE_VLLM', '').lower() in ('1', 'true', 'yes'):
+                import mas_framework.llm.vllm_chat  # noqa: F401
+                model = cls.registry.get('VLLMChat', model_name)
+            else:
+                import mas_framework.llm.hf_chat  # noqa: F401
+                model = cls.registry.get('HFChat', model_name)
         else:
             # Ollama-style short name (e.g. "gemma3", "llama3.2")
             model = cls.registry.get('GPTChat', model_name)

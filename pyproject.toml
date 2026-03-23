@@ -65,6 +65,9 @@ dev = [
     "ipykernel",
     "jupyter",
 ]
+vllm = [
+    "vllm>=0.4.0",
+]
 
 # ---------------------------------------------------------------------------
 # Entry points — invoked via:  uv run <name> [extra args]

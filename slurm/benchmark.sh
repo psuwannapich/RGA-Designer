@@ -56,6 +56,9 @@ DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 
 # ---- Global defaults --------------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
+VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
+export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
