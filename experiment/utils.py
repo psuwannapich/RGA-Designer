@@ -175,14 +175,10 @@ def precompute_role_embeddings(dsets, save_path="./prompt/precomputed_role_embed
         from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
     elif dsets == 'humaneval':
         from experiment.humaneval.humaneval_prompt_set import ROLE_DESCRIPTION
-    elif dsets == 'svamp':
-        from experiment.svamp.svamp_prompt_set import ROLE_DESCRIPTION
+    elif dsets in ('svamp', 'multiarith', 'gsm8k'):
+        from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
     elif dsets == 'aqua':
         from experiment.aqua.aqua_prompt_set import ROLE_DESCRIPTION
-    elif dsets == 'gsm8k':
-        from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
-    elif dsets == 'multiarith':
-        from experiment.multiarith.multiarith_prompt_set import ROLE_DESCRIPTION
 
     for role, description in ROLE_DESCRIPTION.items():
         full_embedding = model.encode(f"{role}: {description.strip()}")
