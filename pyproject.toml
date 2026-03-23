@@ -76,6 +76,7 @@ dev = [
 [project.scripts]
 cold-start = "experiment.cold_start_gemma:main_cli"
 rlhf       = "experiment.rlhf_gsm8k:cli"
+baseline   = "experiment.evaluate_baseline:cli"
 
 [build-system]
 requires = ["hatchling"]
