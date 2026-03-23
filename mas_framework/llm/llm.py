@@ -5,7 +5,10 @@ from mas_framework.llm.format import Message
 
 
 class LLM(ABC):
-    DEFAULT_MAX_TOKENS = 1000
+    # 1000 is too small for reasoning models (e.g. Qwen3) whose <think> chain
+    # alone can exceed 1000 tokens, causing </think> to never be emitted and
+    # leaving the answer parser with truncated internal reasoning.
+    DEFAULT_MAX_TOKENS = 8192
     DEFAULT_TEMPERATURE = 0.2
     DEFUALT_NUM_COMPLETIONS = 1
 

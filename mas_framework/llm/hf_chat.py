@@ -122,7 +122,7 @@ class _Batcher:
 
             input_len = inputs["input_ids"].shape[1]
             results = [
-                tokenizer.decode(out[input_len:], skip_special_tokens=True)
+                _strip_thinking(tokenizer.decode(out[input_len:], skip_special_tokens=True))
                 for out in outputs
             ]
             for i, (_, _, _, loop, fut) in enumerate(batch):
@@ -184,14 +184,51 @@ def _load_model(model_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Thinking-tag stripper
+# ---------------------------------------------------------------------------
+
+def _strip_thinking(text: str) -> str:
+    """
+    Remove Qwen3-style <think>...</think> blocks from a response.
+
+    Qwen3 (and similar reasoning models) prefix their answer with a chain-of-
+    thought enclosed in <think>...</think>.  Downstream answer parsers expect
+    only the final answer, so we strip the thinking block.
+
+    If </think> is absent the generation was truncated (max_tokens hit before
+    the model finished reasoning).  In that case we return an empty string so
+    the caller can detect the failure rather than silently returning garbage.
+    """
+    if "<think>" not in text:
+        return text                         # not a reasoning model response
+
+    close = text.find("</think>")
+    if close == -1:
+        # Truncated — thinking never finished; signal failure with empty string
+        return ""
+
+    return text[close + len("</think>"):].strip()
+
+
+# ---------------------------------------------------------------------------
 # Prompt formatting helper
 # ---------------------------------------------------------------------------
 
 def _format_prompt(tokenizer, messages: List[Dict]) -> str:
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        kwargs: Dict = dict(tokenize=False, add_generation_prompt=True)
+        # Qwen3 and compatible thinking models support enable_thinking=False to
+        # skip the <think>...</think> chain and respond directly.
+        # Set DISABLE_THINKING=1 to use non-thinking mode (faster, lower token
+        # usage, comparable to a standard instruction model).
+        if os.getenv("DISABLE_THINKING", "").lower() in ("1", "true", "yes"):
+            try:
+                return tokenizer.apply_chat_template(
+                    messages, enable_thinking=False, **kwargs
+                )
+            except TypeError:
+                pass  # model tokenizer doesn't support enable_thinking — ignore
+        return tokenizer.apply_chat_template(messages, **kwargs)
     parts = []
     for msg in messages:
         role = msg.get("role", "user")
@@ -276,4 +313,4 @@ class HFChat(LLM):
             )
 
         new_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
-        return tokenizer.decode(new_tokens, skip_special_tokens=True)
+        return _strip_thinking(tokenizer.decode(new_tokens, skip_special_tokens=True))

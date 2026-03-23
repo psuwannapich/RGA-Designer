@@ -97,9 +97,15 @@ def _get_engine_and_tokenizer(model_id: str):
 
 def _format_prompt(tokenizer, messages: List[Dict]) -> str:
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        kwargs: Dict = dict(tokenize=False, add_generation_prompt=True)
+        if os.getenv("DISABLE_THINKING", "").lower() in ("1", "true", "yes"):
+            try:
+                return tokenizer.apply_chat_template(
+                    messages, enable_thinking=False, **kwargs
+                )
+            except TypeError:
+                pass  # non-Qwen3 tokenizer — ignore gracefully
+        return tokenizer.apply_chat_template(messages, **kwargs)
     parts = []
     for msg in messages:
         role = msg.get("role", "user")
@@ -162,7 +168,8 @@ class VLLMChat(LLM):
 
         if final_output is None or not final_output.outputs:
             return ""
-        return final_output.outputs[0].text
+        from mas_framework.llm.hf_chat import _strip_thinking
+        return _strip_thinking(final_output.outputs[0].text)
 
     def gen(
         self,
