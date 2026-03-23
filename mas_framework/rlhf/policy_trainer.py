@@ -269,7 +269,7 @@ class RLHFPolicyTrainer:
         save_path        : path to save policy checkpoint after each epoch
         """
         from sentence_transformers import SentenceTransformer
-        sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
 
         for epoch in range(1, epochs + 1):
             epoch_losses, epoch_rewards = [], []

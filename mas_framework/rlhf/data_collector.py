@@ -106,8 +106,11 @@ class RLHFDataCollector:
     def _get_sentence_model(self):
         if self._sentence_model is None:
             from sentence_transformers import SentenceTransformer
+            # Force CPU: all-MiniLM-L6-v2 is tiny (~90 MB) so CPU inference is
+            # fast, and keeping it off the GPU prevents CUDA resource conflicts
+            # with the main LLM that is already loaded on the accelerator.
             self._sentence_model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2"
+                "sentence-transformers/all-MiniLM-L6-v2", device="cpu"
             )
         return self._sentence_model
 

@@ -185,7 +185,7 @@ def _train_policy(args):
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
 
-    sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
     task_records = []
     for rec in sample:
         task_records.append({
