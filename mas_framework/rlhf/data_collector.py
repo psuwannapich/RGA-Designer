@@ -87,6 +87,7 @@ class RLHFDataCollector:
         num_rounds: int = 1,
         weights: Optional[PreferenceWeights] = None,
         pair_margin: float = 0.05,
+        timeout: int = 600,
     ):
         self.domain = domain
         self.llm_name = llm_name
@@ -98,6 +99,7 @@ class RLHFDataCollector:
         self.num_rounds = num_rounds
         self.weights = weights or PreferenceWeights()
         self.pair_margin = pair_margin
+        self.timeout = timeout
 
         self._sentence_model = None   # lazy-loaded once
 
@@ -138,7 +140,7 @@ class RLHFDataCollector:
 
         try:
             result = await asyncio.wait_for(
-                tg.arun(input_dict, self.num_rounds), timeout=180
+                tg.arun(input_dict, self.num_rounds), timeout=self.timeout
             )
         except Exception as e:
             import traceback
@@ -215,12 +217,12 @@ class RLHFDataCollector:
                 print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
                 traceback.print_exc()
 
-        # Run all graphs concurrently
-        raw_results = await asyncio.gather(
-            *[self._run_graph(g, record, m, n, task_embedding)
-              for g, m, n in graph_runs],
-            return_exceptions=True,
-        )
+        # Run graphs sequentially — local HF models process one request at a
+        # time, so concurrent calls just queue up and hit the timeout.
+        raw_results = []
+        for g, m, n in graph_runs:
+            result = await self._run_graph(g, record, m, n, task_embedding)
+            raw_results.append(result)
 
         results = [r for r in raw_results if isinstance(r, dict)]
         if len(results) < 2:

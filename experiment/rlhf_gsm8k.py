@@ -119,6 +119,7 @@ async def _collect(args):
         num_rounds=1,
         weights=weights,
         pair_margin=args.pair_margin,
+        timeout=args.llm_timeout,
     )
 
     total = await collector.collect_dataset(
@@ -244,6 +245,8 @@ def parse_args():
     p.add_argument("--pair_margin", type=float, default=0.05,
                    help="Minimum score gap to keep a preference pair")
     p.add_argument("--checkpoint_every", type=int, default=20)
+    p.add_argument("--llm_timeout", type=int, default=600,
+                   help="Seconds to wait for a single LLM graph run (default: 600)")
 
     # Reward model
     p.add_argument("--rm_checkpoint", default=None,
