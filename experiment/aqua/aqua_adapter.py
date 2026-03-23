@@ -6,7 +6,7 @@ import pickle
 import random
 from sentence_transformers import SentenceTransformer
 
-from experiment.aqua_prompt_set_adapter import ROLE_DESCRIPTION
+from experiment.aqua.aqua_prompt_set import ROLE_DESCRIPTION
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 

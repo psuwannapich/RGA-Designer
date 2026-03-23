@@ -8,7 +8,7 @@ import random
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from sentence_transformers import SentenceTransformer
-from mmlu_prompt_set import ROLE_DESCRIPTION
+from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
 
 
 def get_sentence_embedding(sentence):

@@ -187,7 +187,7 @@ async def main(ef=True):
     print(f"Loading Sentence Transformer model: {args.embedding_model}")
     sentence_model = SentenceTransformer(args.embedding_model)
 
-    from mmlu_prompt_set import ROLE_DESCRIPTION
+    from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
     role_constraints_dict = {role: desc for role, desc in ROLE_DESCRIPTION.items()}
 
     print(f"Loading pretrained model: {args.model_path}")
