@@ -84,6 +84,12 @@ SC_SAMPLES="${SC_SAMPLES:-5}"
 LIMIT="${LIMIT:-}"                    # empty = evaluate all
 LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
+# vanilla/cot: 8 concurrent tasks → HF batcher generates batch=8 → high GPU util
+# multi-agent methods: lower value to avoid OOM from many concurrent LLM calls
+case "$METHOD" in
+    vanilla|cot|self_consistency) EVAL_BATCH="${EVAL_BATCH:-4}" ;;
+    *)                            EVAL_BATCH="${EVAL_BATCH:-1}" ;;
+esac
 
 # ---- Build output paths -----------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -100,6 +106,7 @@ echo "Node          : $SLURM_NODELIST"
 echo "Method        : $METHOD  (index $METHOD_IDX)"
 echo "Dataset       : $DATASET  (index $DATASET_IDX)"
 echo "HF Model      : $HF_MODEL"
+echo "Eval batch    : $EVAL_BATCH"
 echo "Output file   : $OUTPUT_FILE"
 echo "Started at    : $(date)"
 echo "========================================"
@@ -120,6 +127,7 @@ uv run baseline \
     --method          "$METHOD" \
     --llm_name        "$HF_MODEL" \
     --sc_samples      "$SC_SAMPLES" \
+    --eval_batch_size "$EVAL_BATCH" \
     --timeout         "$LLM_TIMEOUT" \
     --output_file     "$OUTPUT_FILE" \
     --summary_log_file "$SUMMARY_LOG" \

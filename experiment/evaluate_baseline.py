@@ -35,11 +35,12 @@ import asyncio
 import copy
 import datetime
 import json
+import math
 import os
 import random
 import sys
 from collections import Counter
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.stdout.reconfigure(encoding="utf-8")
@@ -256,47 +257,64 @@ async def evaluate(args) -> None:
         else:
             graph = _build_graph(args.method, n_agents, args.dataset, args.llm_name, role_descriptions)
 
-    results = []
+    results: List[dict] = []
     solved = 0
+    num_batches = math.ceil(total / args.eval_batch_size)
 
-    pbar = tqdm(enumerate(dataset_records), total=total, desc=f"{args.method}/{args.dataset}")
-    for idx, record in pbar:
-        task  = record["task"]
-        truth = record["answer"]
+    pbar = tqdm(range(num_batches), desc=f"{args.method}/{args.dataset}")
+    for b in pbar:
+        batch = dataset_records[b * args.eval_batch_size : (b + 1) * args.eval_batch_size]
+        base_idx = b * args.eval_batch_size
 
-        if args.method == "vanilla":
-            raw = await _run_vanilla(args.llm_name, task, timeout=args.timeout)
-            predicted = _get_predict(args.dataset, raw or "")
-        elif args.method == "self_consistency":
-            predicted = await _run_self_consistency(
-                graph, task, args.dataset, args.llm_name, decision_method,
-                n_samples=args.sc_samples, timeout=args.timeout,
-            )
-            raw = predicted  # already the majority-vote predicted string
-            if predicted is None:
-                raw = ""
-        else:
-            raw = await _run_once(
-                graph, task, args.dataset, args.llm_name, decision_method,
-                timeout=args.timeout,
-            )
-            predicted = _get_predict(args.dataset, raw or "")
+        # Build one coroutine per record in the batch; fire them all concurrently.
+        # For vanilla/cot: every coroutine is one LLM call → the HF batcher in
+        # hf_chat.py groups them into a single model.generate(batch) → high GPU util.
+        # For multi-agent methods: each task still runs its agents sequentially
+        # inside the coroutine, but different tasks overlap → partial batching.
+        async def _process(record: dict, idx: int) -> Tuple[int, dict]:
+            task  = record["task"]
+            truth = record["answer"]
 
-        correct = _is_correct(args.dataset, predicted or "", truth)
-        if correct:
-            solved += 1
+            if args.method == "vanilla":
+                raw = await _run_vanilla(args.llm_name, task, timeout=args.timeout)
+                predicted = _get_predict(args.dataset, raw or "")
+            elif args.method == "self_consistency":
+                predicted = await _run_self_consistency(
+                    graph, task, args.dataset, args.llm_name, decision_method,
+                    n_samples=args.sc_samples, timeout=args.timeout,
+                )
+                raw = predicted or ""
+            else:
+                raw = await _run_once(
+                    graph, task, args.dataset, args.llm_name, decision_method,
+                    timeout=args.timeout,
+                )
+                predicted = _get_predict(args.dataset, raw or "")
 
-        results.append({
-            "task_id": f"task_{idx}",
-            "question": task,
-            "true_answer": truth,
-            "predicted_answer": predicted,
-            "raw_response": raw,
-            "is_solved": correct,
-        })
+            correct = _is_correct(args.dataset, predicted or "", truth)
+            return idx, {
+                "task_id": f"task_{idx}",
+                "question": task,
+                "true_answer": truth,
+                "predicted_answer": predicted,
+                "raw_response": raw,
+                "is_solved": correct,
+            }
 
-        acc = solved / (idx + 1) * 100
-        pbar.set_postfix({"acc": f"{acc:.1f}%"})
+        batch_coros = [_process(rec, base_idx + i) for i, rec in enumerate(batch)]
+        batch_outputs = await asyncio.gather(*batch_coros, return_exceptions=True)
+
+        for out in batch_outputs:
+            if isinstance(out, Exception):
+                print(f"  [batch error] {type(out).__name__}: {out}")
+                continue
+            _, result = out
+            results.append(result)
+            if result["is_solved"]:
+                solved += 1
+
+        acc = solved / len(results) * 100 if results else 0
+        pbar.set_postfix({"acc": f"{acc:.1f}%", "done": len(results)})
 
     # Write per-task results
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
@@ -348,6 +366,10 @@ def parse_args():
                    help="Number of agents in the graph (default: per-method default)")
     p.add_argument("--sc_samples", type=int, default=_SC_SAMPLES,
                    help="Number of CoT samples for self_consistency (default: 5)")
+    p.add_argument("--eval_batch_size", type=int, default=4,
+                   help="Tasks to run concurrently per batch. For vanilla/cot this "
+                        "maps directly to the HF batcher batch size; for multi-agent "
+                        "methods reduce if you hit OOM (default: 4)")
     p.add_argument("--limit", type=int, default=None,
                    help="Cap number of test samples (default: all)")
     p.add_argument("--timeout", type=int, default=600,
