@@ -66,6 +66,7 @@ W_TOKEN="${W_TOKEN:-0.2}"
 PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-20}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
+CONCURRENCY="${CONCURRENCY:-3}"
 SEED="${SEED:-42}"
 
 echo "========================================"
@@ -96,6 +97,7 @@ uv run rlhf \
     --pair_margin    "$PAIR_MARGIN" \
     --checkpoint_every "$CHECKPOINT_EVERY" \
     --llm_timeout    "$LLM_TIMEOUT" \
+    --concurrency    "$CONCURRENCY" \
     --seed           "$SEED"
 
 echo "========================================"
