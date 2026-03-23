@@ -242,6 +242,33 @@ async def evaluate(args) -> None:
     if args.limit:
         dataset_records = dataset_records[: args.limit]
     total = len(dataset_records)
+
+    # ------------------------------------------------------------------
+    # Resume from checkpoint: the output file itself is the checkpoint.
+    # Any task_id already written to it is skipped on restart.
+    # ------------------------------------------------------------------
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
+    done_ids: set = set()
+    results: List[dict] = []
+    solved = 0
+
+    if os.path.exists(args.output_file):
+        with open(args.output_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    done_ids.add(r["task_id"])
+                    results.append(r)
+                    if r.get("is_solved"):
+                        solved += 1
+                except json.JSONDecodeError:
+                    pass
+        if done_ids:
+            print(f"Resuming: {len(done_ids)} tasks already done, {total - len(done_ids)} remaining.")
+
     print(f"Evaluating {total} samples | dataset={args.dataset} | method={args.method} | llm={args.llm_name}")
 
     role_descriptions = _get_role_description(args.dataset)
@@ -257,70 +284,82 @@ async def evaluate(args) -> None:
         else:
             graph = _build_graph(args.method, n_agents, args.dataset, args.llm_name, role_descriptions)
 
-    results: List[dict] = []
-    solved = 0
-    num_batches = math.ceil(total / args.eval_batch_size)
+    # Open output file in append mode — new results are flushed after every batch
+    out_f = open(args.output_file, "a", encoding="utf-8")
 
-    pbar = tqdm(range(num_batches), desc=f"{args.method}/{args.dataset}")
-    for b in pbar:
-        batch = dataset_records[b * args.eval_batch_size : (b + 1) * args.eval_batch_size]
-        base_idx = b * args.eval_batch_size
+    try:
+        num_batches = math.ceil(total / args.eval_batch_size)
+        pbar = tqdm(range(num_batches), desc=f"{args.method}/{args.dataset}")
+        for b in pbar:
+            batch = dataset_records[b * args.eval_batch_size : (b + 1) * args.eval_batch_size]
+            base_idx = b * args.eval_batch_size
 
-        # Build one coroutine per record in the batch; fire them all concurrently.
-        # For vanilla/cot: every coroutine is one LLM call → the HF batcher in
-        # hf_chat.py groups them into a single model.generate(batch) → high GPU util.
-        # For multi-agent methods: each task still runs its agents sequentially
-        # inside the coroutine, but different tasks overlap → partial batching.
-        async def _process(record: dict, idx: int) -> Tuple[int, dict]:
-            task  = record["task"]
-            truth = record["answer"]
-
-            if args.method == "vanilla":
-                raw = await _run_vanilla(args.llm_name, task, timeout=args.timeout)
-                predicted = _get_predict(args.dataset, raw or "")
-            elif args.method == "self_consistency":
-                predicted = await _run_self_consistency(
-                    graph, task, args.dataset, args.llm_name, decision_method,
-                    n_samples=args.sc_samples, timeout=args.timeout,
-                )
-                raw = predicted or ""
-            else:
-                raw = await _run_once(
-                    graph, task, args.dataset, args.llm_name, decision_method,
-                    timeout=args.timeout,
-                )
-                predicted = _get_predict(args.dataset, raw or "")
-
-            correct = _is_correct(args.dataset, predicted or "", truth)
-            return idx, {
-                "task_id": f"task_{idx}",
-                "question": task,
-                "true_answer": truth,
-                "predicted_answer": predicted,
-                "raw_response": raw,
-                "is_solved": correct,
-            }
-
-        batch_coros = [_process(rec, base_idx + i) for i, rec in enumerate(batch)]
-        batch_outputs = await asyncio.gather(*batch_coros, return_exceptions=True)
-
-        for out in batch_outputs:
-            if isinstance(out, Exception):
-                print(f"  [batch error] {type(out).__name__}: {out}")
+            # Skip tasks already completed in a previous run
+            pending = [
+                (i, rec) for i, rec in enumerate(batch)
+                if f"task_{base_idx + i}" not in done_ids
+            ]
+            if not pending:
+                acc = solved / len(results) * 100 if results else 0
+                pbar.set_postfix({"acc": f"{acc:.1f}%", "done": len(results), "skip": len(batch)})
                 continue
-            _, result = out
-            results.append(result)
-            if result["is_solved"]:
-                solved += 1
 
-        acc = solved / len(results) * 100 if results else 0
-        pbar.set_postfix({"acc": f"{acc:.1f}%", "done": len(results)})
+            # Build one coroutine per record in the batch; fire them all concurrently.
+            # For vanilla/cot: every coroutine is one LLM call → the HF batcher in
+            # hf_chat.py groups them into a single model.generate(batch) → high GPU util.
+            # For multi-agent methods: each task still runs its agents sequentially
+            # inside the coroutine, but different tasks overlap → partial batching.
+            async def _process(record: dict, idx: int) -> Tuple[int, dict]:
+                task  = record["task"]
+                truth = record["answer"]
 
-    # Write per-task results
-    os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
-    with open(args.output_file, "w", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
+                if args.method == "vanilla":
+                    raw = await _run_vanilla(args.llm_name, task, timeout=args.timeout)
+                    predicted = _get_predict(args.dataset, raw or "")
+                elif args.method == "self_consistency":
+                    predicted = await _run_self_consistency(
+                        graph, task, args.dataset, args.llm_name, decision_method,
+                        n_samples=args.sc_samples, timeout=args.timeout,
+                    )
+                    raw = predicted or ""
+                else:
+                    raw = await _run_once(
+                        graph, task, args.dataset, args.llm_name, decision_method,
+                        timeout=args.timeout,
+                    )
+                    predicted = _get_predict(args.dataset, raw or "")
+
+                correct = _is_correct(args.dataset, predicted or "", truth)
+                return idx, {
+                    "task_id": f"task_{idx}",
+                    "question": task,
+                    "true_answer": truth,
+                    "predicted_answer": predicted,
+                    "raw_response": raw,
+                    "is_solved": correct,
+                }
+
+            batch_coros = [_process(rec, base_idx + i) for i, rec in pending]
+            batch_outputs = await asyncio.gather(*batch_coros, return_exceptions=True)
+
+            for out in batch_outputs:
+                if isinstance(out, Exception):
+                    import traceback
+                    print(f"  [batch error] {type(out).__name__}: {out}")
+                    traceback.print_exc()
+                    continue
+                _, result = out
+                results.append(result)
+                if result["is_solved"]:
+                    solved += 1
+                # Flush to disk immediately — this is the checkpoint
+                out_f.write(json.dumps(result) + "\n")
+                out_f.flush()
+
+            acc = solved / len(results) * 100 if results else 0
+            pbar.set_postfix({"acc": f"{acc:.1f}%", "done": len(results)})
+    finally:
+        out_f.close()
 
     accuracy = solved / total * 100 if total else 0
     print(f"\nAccuracy: {accuracy:.2f}%  ({solved}/{total})")

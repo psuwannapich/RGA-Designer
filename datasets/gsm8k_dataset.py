@@ -188,11 +188,11 @@ def _fix_a_slash_b(string):
         return string
 
 def _remove_right_units(string):
-    # "\\text{ " only ever occurs (at least in the val set) when describing units
+    # "\\text{ " only ever occurs (at least in the val set) when describing units.
+    # Take only the part before the first occurrence; free-form LLM output may
+    # contain multiple \text{ tokens so we cannot assert exactly 2 splits.
     if "\\text{ " in string:
-        splits = string.split("\\text{ ")
-        assert len(splits) == 2
-        return splits[0]
+        return string.split("\\text{ ")[0]
     else:
         return string
 
