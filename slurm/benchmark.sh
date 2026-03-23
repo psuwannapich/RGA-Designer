@@ -22,36 +22,26 @@
 #   4  multiarith
 #   5  svamp
 #
-# Required — set before submitting:
-#   MODEL_PATH   path to trained ARGDesigner checkpoint directory
-#                (produced by experiment/train_ARGDesigner.py or cold-start)
-#
 # Optional overrides:
-#   HF_MODEL     HuggingFace model ID  (default: Qwen/Qwen3-8B)
-#                OR Ollama short name  (default on local: gemma3)
-#   EVAL_BATCH   parallel inference batch size (reduce if OOM)
-#   LIMIT        cap number of test samples (empty = use all)
+#   CHECKPOINT_ROOT  root dir of finetune checkpoints (default: checkpoints)
+#                    Per-dataset path is: $CHECKPOINT_ROOT/<dataset>/
+#                    This matches the output layout of slurm/finetune.sh.
+#   HF_MODEL         HuggingFace model ID  (default: Qwen/Qwen3-8B)
+#   EVAL_BATCH       parallel inference batch size (reduce if OOM)
+#   LIMIT            cap number of test samples (empty = use all)
 #
 # Usage examples:
-#   # Benchmark all datasets in parallel
-#   MODEL_PATH=ColdStartData_hf_gsm8k sbatch slurm/benchmark.sh
+#   # Benchmark all datasets using default checkpoint layout
+#   sbatch slurm/benchmark.sh
 #
-#   # Single dataset (e.g. gsm8k only)
-#   MODEL_PATH=ColdStartData_hf_gsm8k sbatch --array=0 slurm/benchmark.sh
+#   # Custom checkpoint root
+#   CHECKPOINT_ROOT=my_checkpoints sbatch slurm/benchmark.sh
 #
-#   # Override model
-#   MODEL_PATH=my_checkpoint HF_MODEL=meta-llama/Llama-3.2-3B-Instruct \
-#       sbatch slurm/benchmark.sh
+#   # Single dataset
+#   sbatch --array=0 slurm/benchmark.sh
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
-
-# ---- Required ---------------------------------------------------------------
-if [[ -z "${MODEL_PATH:-}" ]]; then
-    echo "ERROR: MODEL_PATH must be set to the ARGDesigner checkpoint directory."
-    echo "  e.g.: MODEL_PATH=ColdStartData_hf_gsm8k sbatch slurm/benchmark.sh"
-    exit 1
-fi
 
 # ---- Dataset registry -------------------------------------------------------
 DATASETS=(
@@ -69,11 +59,21 @@ HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 
 # Absolute project root (directory containing this script's parent)
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 mkdir -p "$PROJECT_ROOT/logs"
+
+# Per-dataset checkpoint — mirrors finetune.sh output layout
+MODEL_PATH="$PROJECT_ROOT/${CHECKPOINT_ROOT}/${DATASET}"
+
+if [[ ! -d "$MODEL_PATH" ]]; then
+    echo "ERROR: checkpoint directory not found: $MODEL_PATH"
+    echo "  Run slurm/finetune.sh first, or set CHECKPOINT_ROOT to the correct root."
+    exit 1
+fi
 
 echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
@@ -101,7 +101,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/gsm8k/task_split_gsm8k.json"
         cd "$PROJECT_ROOT/experiment/gsm8k"
         python evaluate_gsm8k.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/gsm8k/gsm8k.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
@@ -116,7 +116,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/aqua/task_split_aqua.json"
         cd "$PROJECT_ROOT/experiment/aqua"
         python evaluate_aqua.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/AQuA/AQuA.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
@@ -131,7 +131,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/humaneval/task_split_humaneval.json"
         cd "$PROJECT_ROOT/experiment/humaneval"
         python evaluate_humaneval.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/humaneval/humaneval-py.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
@@ -156,7 +156,7 @@ case "$DATASET" in
         [[ -n "$LIMIT" ]] && LIMIT_MMLU_FLAG="--limit_questions $LIMIT"
 
         python evaluate_mmlu.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --data_dir        "$PROJECT_ROOT/datasets/MMLU/data" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
@@ -169,7 +169,7 @@ case "$DATASET" in
     multiarith)
         cd "$PROJECT_ROOT/experiment/multiarith"
         python evaluate_multiarith.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/MultiArith/MultiArith.json" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
@@ -183,7 +183,7 @@ case "$DATASET" in
     svamp)
         cd "$PROJECT_ROOT/experiment/svamp"
         python evaluate_svamp.py \
-            --model_path      "$PROJECT_ROOT/$MODEL_PATH" \
+            --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/SVAMP/SVAMP.json" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
