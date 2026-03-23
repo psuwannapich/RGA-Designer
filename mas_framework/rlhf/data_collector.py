@@ -82,6 +82,7 @@ class RLHFDataCollector:
         answer_checker: Callable[[str, str], bool],
         get_predict: Callable[[str], str],
         role_descriptions: Dict[str, str],
+        agent_name: str = "MathSolver",
         decision_method: str = "FinalRefer",
         num_rounds: int = 1,
         weights: Optional[PreferenceWeights] = None,
@@ -92,6 +93,7 @@ class RLHFDataCollector:
         self.answer_checker = answer_checker
         self.get_predict = get_predict
         self.role_descriptions = role_descriptions
+        self.agent_name = agent_name
         self.decision_method = decision_method
         self.num_rounds = num_rounds
         self.weights = weights or PreferenceWeights()
@@ -139,7 +141,9 @@ class RLHFDataCollector:
                 tg.arun(input_dict, self.num_rounds), timeout=180
             )
         except Exception as e:
-            print(f"  [skip] {mode}-{agent_num}: {e}")
+            import traceback
+            print(f"  [skip] {mode}-{agent_num}: {type(e).__name__}: {e}")
+            traceback.print_exc()
             return None
 
         raw = result[0] if isinstance(result, (list, tuple)) else result
@@ -201,13 +205,15 @@ class RLHFDataCollector:
                 g = Graph(
                     domain=self.domain,
                     llm_name=self.llm_name,
-                    agent_names=["MathSolver"] * n,
+                    agent_names=[self.agent_name] * n,
                     decision_method=self.decision_method,
                     **kwargs,
                 )
                 graph_runs.append((g, mode, n))
             except Exception as e:
-                print(f"  [skip build] {mode}-{n}: {e}")
+                import traceback
+                print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
+                traceback.print_exc()
 
         # Run all graphs concurrently
         raw_results = await asyncio.gather(

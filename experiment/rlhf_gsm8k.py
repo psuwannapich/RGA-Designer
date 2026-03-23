@@ -54,6 +54,7 @@ from experiment.cold_start_gemma import (
     _is_correct,
     _get_role_description,
     _get_decision_method,
+    _get_agent_name,
 )
 
 SUPPORTED_DATASETS = ["gsm8k", "aqua", "multiarith", "svamp", "humaneval", "mmlu"]
@@ -99,6 +100,7 @@ async def _collect(args):
 
     role_desc = _get_role_description(args.dataset)
     decision_method = _get_decision_method(args.dataset)
+    agent_name = _get_agent_name(args.dataset)
 
     weights = PreferenceWeights(
         correctness=args.w_correct,
@@ -112,6 +114,7 @@ async def _collect(args):
         answer_checker=_answer_checker(args.dataset),
         get_predict=_predict_fn(args.dataset),
         role_descriptions=role_desc,
+        agent_name=agent_name,
         decision_method=decision_method,
         num_rounds=1,
         weights=weights,
