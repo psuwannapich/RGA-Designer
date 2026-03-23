@@ -120,7 +120,6 @@ async def _collect(args):
         weights=weights,
         pair_margin=args.pair_margin,
         timeout=args.llm_timeout,
-        concurrency=args.concurrency,
     )
 
     total = await collector.collect_dataset(
@@ -248,8 +247,6 @@ def parse_args():
     p.add_argument("--checkpoint_every", type=int, default=20)
     p.add_argument("--llm_timeout", type=int, default=600,
                    help="Seconds to wait for a single LLM graph run (default: 600)")
-    p.add_argument("--concurrency", type=int, default=3,
-                   help="Max graph configs running concurrently per task (default: 3)")
 
     # Reward model
     p.add_argument("--rm_checkpoint", default=None,

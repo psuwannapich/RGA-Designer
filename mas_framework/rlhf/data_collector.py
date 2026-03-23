@@ -88,7 +88,6 @@ class RLHFDataCollector:
         weights: Optional[PreferenceWeights] = None,
         pair_margin: float = 0.05,
         timeout: int = 600,
-        concurrency: int = 3,
     ):
         self.domain = domain
         self.llm_name = llm_name
@@ -101,7 +100,6 @@ class RLHFDataCollector:
         self.weights = weights or PreferenceWeights()
         self.pair_margin = pair_margin
         self.timeout = timeout
-        self.concurrency = concurrency
 
         self._sentence_model = None   # lazy-loaded once
 
@@ -219,22 +217,12 @@ class RLHFDataCollector:
                 print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
                 traceback.print_exc()
 
-        # Run graphs concurrently but bounded by a semaphore.
-        # - Multiple graphs overlap their CPU work (tokenisation, graph prep).
-        # - hf_chat._inference_lock serialises the actual GPU forward passes
-        #   so there are no CUDA stream conflicts.
-        # - Keeping `concurrency` graphs in-flight minimises GPU idle time
-        #   between forward passes.
-        sem = asyncio.Semaphore(self.concurrency)
-
-        async def _run_with_sem(g, m, n):
-            async with sem:
-                return await self._run_graph(g, record, m, n, task_embedding)
-
-        raw_results = await asyncio.gather(
-            *[_run_with_sem(g, m, n) for g, m, n in graph_runs],
-            return_exceptions=True,
-        )
+        # Run graphs sequentially — local HF models process one request at a
+        # time, so concurrent calls just queue up and hit the timeout.
+        raw_results = []
+        for g, m, n in graph_runs:
+            result = await self._run_graph(g, record, m, n, task_embedding)
+            raw_results.append(result)
 
         results = [r for r in raw_results if isinstance(r, dict)]
         if len(results) < 2:
