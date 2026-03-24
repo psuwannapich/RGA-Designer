@@ -28,6 +28,8 @@ import threading
 import uuid
 from typing import Dict, List, Optional, Union
 
+import vllm  # noqa: F401 — raises ImportError early if vllm is not installed
+
 from mas_framework.llm.format import Message
 from mas_framework.llm.llm import LLM
 from mas_framework.llm.llm_registry import LLMRegistry
