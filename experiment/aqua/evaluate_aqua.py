@@ -16,8 +16,8 @@ from mas_framework.tools.reader.readers import JSONLReader
 from mas_framework.graph.graph import TestGraph
 from experiment.utils import load_model, generate_graph, convert_to_pyg_graph
 from benchmark_datasets.aqua_dataset import aqua_data_process, aqua_get_predict
-from finetune_aqua import setup_environment
-from aqua_prompt_set import ROLE_DESCRIPTION
+from experiment.aqua.finetune_aqua import setup_environment
+from experiment.aqua.aqua_prompt_set import ROLE_DESCRIPTION
 
 
 def parse_args():

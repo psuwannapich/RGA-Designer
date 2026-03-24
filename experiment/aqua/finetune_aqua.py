@@ -24,7 +24,6 @@ from sentence_transformers import SentenceTransformer
 from experiment import process_dataset as gdata
 from mas_framework.graph.graph import Graph, TestGraph
 from mas_framework.tools.reader.readers import JSONLReader
-from experiments.cold_start import get_kwargs
 from benchmark_datasets.aqua_dataset import aqua_data_process, aqua_get_predict
 from experiment.aqua.aqua_prompt_set import ROLE_DESCRIPTION
 
@@ -283,7 +282,7 @@ async def evaluate_and_save_aqua_simple(graph: Graph, dataset, args, current_mod
                 total_solved += 1
                 name = "_".join(map(str, ['aqua', metadata['record_idx'], current_mode, current_agent_num, 'True']))
                 filepath = os.path.join(output_dir, f'{name}.pt')
-                from experiments.cold_start import save_graph_with_features
+                from experiment.utils import save_graph_with_features
                 save_graph_with_features(metadata['flow_graph'], filepath,
                                          {"mode": current_mode, "agent_nums": current_agent_num,
                                           "is_correct": is_solved, "question": metadata['question']})
