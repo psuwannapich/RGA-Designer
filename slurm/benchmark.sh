@@ -58,7 +58,7 @@ DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
-export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE
+export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE PYTHONPATH
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
@@ -68,6 +68,10 @@ CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 mkdir -p "$PROJECT_ROOT/logs"
+
+# Ensure the project root is on the Python path so that `from datasets.xxx`
+# imports work regardless of which experiment sub-directory the script cd's into.
+PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 # Per-dataset checkpoint — mirrors finetune.sh output layout
 MODEL_PATH="$PROJECT_ROOT/${CHECKPOINT_ROOT}/${DATASET}"
