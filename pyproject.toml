@@ -52,6 +52,8 @@ dependencies = [
     # HuggingFace direct inference (HPC / Slurm — no Ollama server required)
     "transformers>=4.40.0",
     "accelerate>=0.30.0",
+    "vllm>=0.6.1.post2",
+    "datasets>=4.8.4",
 ]
 
 [dependency-groups]
