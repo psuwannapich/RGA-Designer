@@ -31,6 +31,9 @@
 
 set -euo pipefail
 
+# Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
+source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
+
 # ---- User-configurable defaults -------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B

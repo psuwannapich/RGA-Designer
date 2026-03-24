@@ -28,6 +28,9 @@
 
 set -euo pipefail
 
+# Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
+source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
+
 DATASETS=(gsm8k aqua multiarith svamp humaneval mmlu)
 
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

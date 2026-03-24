@@ -27,52 +27,8 @@ echo "Node     : $SLURM_NODELIST"
 echo "Started  : $(date)"
 echo "========================================"
 
-# ---- Try to enable the module system (Lmod / Environment Modules) --------
-# Temporarily disable -u so Lmod init scripts can reference unset variables.
-set +u
-for _init in \
-    /usr/share/lmod/lmod/init/bash \
-    /usr/local/lmod/lmod/init/bash \
-    /opt/apps/lmod/lmod/init/bash \
-    /etc/profile.d/lmod.sh \
-    /etc/profile.d/modules.sh \
-    /usr/share/Modules/init/bash; do
-    if [[ -f "$_init" ]]; then
-        # shellcheck disable=SC1090
-        source "$_init" && echo "Loaded module system: $_init" && break
-    fi
-done
-set -u
-
-# ---- Try to load a CUDA module -------------------------------------------
-if command -v module &>/dev/null; then
-    echo "Available modules (CUDA):"
-    module avail 2>&1 | grep -i cuda || echo "  <none found>"
-    for _cuda_mod in CUDA/12.4.0 CUDA/12.1.0 CUDA/12.0.0 CUDA/11.8.0 cuda/12.4 cuda/12.1 cuda; do
-        if module load "$_cuda_mod" 2>/dev/null; then
-            echo "Loaded module: $_cuda_mod"
-            break
-        fi
-    done
-else
-    echo "module command not available"
-fi
-
-# ---- Locate CUDA_HOME if not already set ---------------------------------
-if [[ -z "${CUDA_HOME:-}" ]]; then
-    NVCC="$(which nvcc 2>/dev/null || true)"
-    if [[ -n "$NVCC" ]]; then
-        export CUDA_HOME="$(dirname "$(dirname "$NVCC")")"
-    else
-        for _c in /usr/local/cuda /opt/cuda /usr/local/cuda-12.4 /usr/local/cuda-12.1 /usr/local/cuda-12.0 /usr/local/cuda-11.8; do
-            if [[ -f "$_c/bin/nvcc" ]]; then
-                export CUDA_HOME="$_c"; break
-            fi
-        done
-    fi
-fi
-
-[[ -n "${CUDA_HOME:-}" ]] && export PATH="$CUDA_HOME/bin:$PATH" && export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+# Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
+source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
 
 echo "CUDA_HOME : ${CUDA_HOME:-<not found>}"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
@@ -101,13 +57,13 @@ if [[ -n "${VLLM_VERSION:-}" && -n "${TORCH_VERSION:-}" && -n "${TV_VERSION:-}" 
     COMBOS=("${VLLM_VERSION}:${TORCH_VERSION}:${TV_VERSION}")
     echo "Using caller-specified versions: vllm=${VLLM_VERSION} torch=${TORCH_VERSION} tv=${TV_VERSION}"
 else
-    # Ordered newest → oldest; each triple is known to be ABI-compatible.
+    # Ordered newest → oldest; each triple is ABI-compatible.
+    # vLLM >= 0.8.4 is required for Qwen3 rope_scaling support.
+    # vLLM <  0.8.4 will pass the import check but fail on Qwen3 model load.
     COMBOS=(
         "0.8.5:2.6.0:0.21.0"
-        "0.8.3:2.5.1:0.20.0"
-        "0.7.3:2.5.1:0.20.0"
-        "0.7.3:2.4.0:0.19.0"
-        "0.6.1.post2:2.4.0:0.19.0"
+        "0.8.4:2.6.0:0.21.0"
+        "0.8.3:2.5.1:0.20.0"   # pre-Qwen3 — kept as last resort
     )
     echo "Will probe version combos: ${COMBOS[*]}"
 fi
@@ -128,15 +84,26 @@ for COMBO in "${COMBOS[@]}"; do
                 "torch==${TORCH_VER}+${CUDA_TAG}" \
                 "torchvision==${TV_VER}+${CUDA_TAG}" \
                 "vllm==${VLLM_VER}" \
-                "setuptools>=77,<79" \
                 --extra-index-url "https://download.pytorch.org/whl/${CUDA_TAG}" \
                 2>/dev/null; then
             echo "  pip install failed — skipping"
             continue
         fi
 
-        # Verify the C extension actually loads (catches ABI mismatches).
-        IMPORT_OUT=$(uv run python -c "import vllm; print('OK', vllm.__version__)" 2>&1)
+        # Verify the C extension actually loads (catches ABI mismatches) AND
+        # that Qwen3 rope_scaling format is supported (requires vllm>=0.8.4).
+        IMPORT_OUT=$(uv run python -c "
+import vllm
+import vllm._C          # explicit: fails immediately on ABI mismatch
+from vllm import LLM, SamplingParams
+from vllm.engine.arg_utils import AsyncEngineArgs
+# Probe Qwen3 rope_scaling support without downloading weights
+import transformers
+cfg = transformers.AutoConfig.from_pretrained('${HF_MODEL:-Qwen/Qwen3-4B}', trust_remote_code=True)
+args = AsyncEngineArgs(model='${HF_MODEL:-Qwen/Qwen3-4B}', trust_remote_code=True)
+args.create_engine_config()   # raises AssertionError on old vllm + Qwen3
+print('OK', vllm.__version__)
+" 2>&1)
         if echo "${IMPORT_OUT}" | grep -q "^OK"; then
             echo "  Import check: ${IMPORT_OUT}"
             echo "  ✓ SUCCESS"

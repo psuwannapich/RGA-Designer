@@ -52,6 +52,9 @@
 
 set -euo pipefail
 
+# Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
+source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
+
 # ---- Method / dataset registries -------------------------------------------
 METHODS=(vanilla cot self_consistency chain complete random star llm_debate)
 DATASETS=(gsm8k aqua multiarith svamp humaneval mmlu)
