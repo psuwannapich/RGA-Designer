@@ -62,7 +62,7 @@ TRAIN_RM_JOB=$(sbatch \
     --array="$DATASETS_ARRAY" \
     --dependency=afterok:"$COLLECT_JOB" \
     --gres="gpu:1" \
-    --export=ALL,PREFERENCE_ROOT="$PREFERENCE_ROOT",RM_ROOT="$RM_ROOT" \
+    --export=ALL,HF_MODEL="$HF_MODEL",PREFERENCE_ROOT="$PREFERENCE_ROOT",RM_ROOT="$RM_ROOT" \
     "$PROJECT_ROOT/slurm/train_rm.sh" \
     | awk '{print $NF}')
 echo "  train_rm job ID: $TRAIN_RM_JOB"

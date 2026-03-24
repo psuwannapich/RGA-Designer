@@ -209,6 +209,23 @@ def _train_policy(args):
         save_path=args.policy_checkpoint,
     )
 
+    # Save benchmark-compatible checkpoint (ef_best_model.pth) so that
+    # benchmark.sh / load_model() can evaluate the RLHF policy directly.
+    # load_model() requires keys: args, data_statistics, model_state_dict.
+    policy_dir = os.path.dirname(args.policy_checkpoint) or "."
+    orig_ckpt_file = os.path.join(args.model_dir, "ef_best_model.pth")
+    orig_ckpt = torch.load(orig_ckpt_file, map_location=device, weights_only=False)
+    bench_ckpt_path = os.path.join(policy_dir, "ef_best_model.pth")
+    torch.save(
+        {
+            "args": orig_ckpt["args"],
+            "data_statistics": orig_ckpt["data_statistics"],
+            "model_state_dict": policy.state_dict(),
+        },
+        bench_ckpt_path,
+    )
+    print(f"Saved benchmark-compatible checkpoint → {bench_ckpt_path}")
+
 
 # ---------------------------------------------------------------------------
 # CLI

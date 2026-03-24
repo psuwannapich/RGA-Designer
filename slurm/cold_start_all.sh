@@ -48,12 +48,12 @@ DATASETS=(
     mmlu         # 5
 )
 JSONLS=(
-    "benchmark_benchmark_datasets/gsm8k/gsm8k.jsonl"            # 0
-    "benchmark_benchmark_datasets/AQuA/AQuA.jsonl"              # 1
-    "benchmark_benchmark_datasets/MultiArith/MultiArith.json"   # 2
-    "benchmark_benchmark_datasets/SVAMP/SVAMP.json"             # 3
-    "benchmark_benchmark_datasets/humaneval/humaneval-py.jsonl" # 4
-    "benchmark_benchmark_datasets/MMLU/data"                    # 5 — directory, not a single file
+    "benchmark_datasets/gsm8k/gsm8k.jsonl"            # 0
+    "benchmark_datasets/AQuA/AQuA.jsonl"              # 1
+    "benchmark_datasets/MultiArith/MultiArith.json"   # 2
+    "benchmark_datasets/SVAMP/SVAMP.json"             # 3
+    "benchmark_datasets/humaneval/humaneval-py.jsonl" # 4
+    "benchmark_datasets/MMLU/data"                    # 5 — directory, not a single file
 )
 
 # Per-dataset agent counts (from original cold-start scripts)
@@ -97,7 +97,7 @@ echo "========================================"
 # Download MMLU data if this is the mmlu job and the data dir is missing
 if [[ "$DATASET" == "mmlu" && ! -d "$DATASET_JSON/test" ]]; then
     echo "MMLU data not found — running download script..."
-    uv run python benchmark_benchmark_datasets/MMLU/download.py
+    uv run python benchmark_datasets/MMLU/download.py
     echo "MMLU download complete."
 fi
 
