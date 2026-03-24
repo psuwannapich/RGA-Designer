@@ -98,9 +98,11 @@ LIMIT_FLAG=""
 [[ -n "$LIMIT" ]] && LIMIT_FLAG="--limit $LIMIT"
 
 # ---- Per-dataset paths and arguments ----------------------------------------
+RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_FILE="$PROJECT_ROOT/logs/${DATASET}_results_${TIMESTAMP}.jsonl"
-SUMMARY_LOG="$PROJECT_ROOT/logs/evaluation_summary.jsonl"
+mkdir -p "$PROJECT_ROOT/${RESULTS_ROOT}/arg_designer"
+OUTPUT_FILE="$PROJECT_ROOT/${RESULTS_ROOT}/arg_designer/${DATASET}_${TIMESTAMP}.jsonl"
+SUMMARY_LOG="$PROJECT_ROOT/${RESULTS_ROOT}/summary.jsonl"
 
 cd "$PROJECT_ROOT"
 

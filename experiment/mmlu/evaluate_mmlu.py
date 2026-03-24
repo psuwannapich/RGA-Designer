@@ -182,7 +182,7 @@ async def main(ef=True):
 
     print("Loading MMLU dataset...")
     download()
-    dataset_test = MMLUDataset('val')
+    dataset_test = MMLUDataset('val', data_dir=args.data_dir)
 
     print(f"Loading Sentence Transformer model: {args.embedding_model}")
     sentence_model = SentenceTransformer(args.embedding_model)

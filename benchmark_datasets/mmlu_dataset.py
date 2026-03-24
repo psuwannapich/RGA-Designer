@@ -62,11 +62,15 @@ def mmlu_get_predict(pred_str: str) -> str:
 class MMLUDataset(ABC):
     def __init__(self,
                  split: Union[Literal['dev'], Literal['val'], Literal['test']],
+                 data_dir: str = None,
                  ) -> None:
 
         self._split = split
 
-        data_path = f"/root/GDesigner/datasets/MMLU/data/{self._split}/"
+        if data_dir is None:
+            # Default: data lives next to this file in MMLU/data/
+            data_dir = os.path.join(os.path.dirname(__file__), "MMLU", "data")
+        data_path = os.path.join(data_dir, self._split) + os.sep
         self._total_df: pd.DataFrame = self._load_data(data_path)
 
     @staticmethod
