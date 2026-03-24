@@ -33,6 +33,7 @@ set -euo pipefail
 
 # ---- User-configurable defaults -------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 DATASET="${DATASET:-gsm8k}"
 DATASET_JSON="${DATASET_JSON:-benchmark_datasets/${DATASET}/${DATASET}.jsonl}"
 NUM_TASKS="${NUM_TASKS:-0}"
@@ -40,7 +41,7 @@ BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
 MIN_AGENTS="${MIN_AGENTS:-3}"
 MAX_AGENTS="${MAX_AGENTS:-4}"
-OUTPUT_DIR="${OUTPUT_DIR:-ColdStartData_hf_${DATASET}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${MODEL_SLUG}/ColdStartData/${DATASET}}"
 SEED="${SEED:-42}"
 
 

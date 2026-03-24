@@ -82,6 +82,7 @@ PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 # ---- Configurable knobs -----------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
 DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
@@ -100,10 +101,10 @@ esac
 
 # ---- Build output paths -----------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="$PROJECT_ROOT/${RESULTS_ROOT}/${METHOD}"
+OUTPUT_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/${METHOD}"
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_FILE="$OUTPUT_DIR/${DATASET}_${TIMESTAMP}.jsonl"
-SUMMARY_LOG="$PROJECT_ROOT/${RESULTS_ROOT}/summary.jsonl"
+SUMMARY_LOG="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/summary.jsonl"
 
 DATASET_JSON="$PROJECT_ROOT/${DATASET_JSONS[$DATASET_IDX]}"
 

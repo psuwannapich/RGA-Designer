@@ -39,8 +39,9 @@ NUM_GPUS="${NUM_GPUS:-2}"          # GPUs for LLM stages; train always uses 1
 FINETUNE_EPOCHS="${FINETUNE_EPOCHS:-200}"
 FINETUNE_LR="${FINETUNE_LR:-5e-5}"
 
-COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData_hf}"
+COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
+MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$PROJECT_ROOT/logs"
@@ -72,7 +73,7 @@ TRAIN_JOB=$(sbatch \
     --array="$DATASETS_ARRAY" \
     --dependency=afterok:"$COLD_JOB" \
     --gres="gpu:1" \
-    --export=ALL,COLD_START_ROOT="$COLD_START_ROOT",CHECKPOINT_ROOT="$CHECKPOINT_ROOT",EPOCHS="$EPOCHS" \
+    --export=ALL,HF_MODEL="$HF_MODEL",COLD_START_ROOT="$COLD_START_ROOT",CHECKPOINT_ROOT="$CHECKPOINT_ROOT",EPOCHS="$EPOCHS" \
     "$PROJECT_ROOT/slurm/train.sh" \
     | awk '{print $NF}')
 echo "  Train job ID: $TRAIN_JOB"
@@ -115,7 +116,7 @@ set -euo pipefail
 
 DATASETS=(gsm8k aqua multiarith svamp humaneval mmlu)
 DATASET="\${DATASETS[\$SLURM_ARRAY_TASK_ID]}"
-export MODEL_PATH="${CHECKPOINT_ROOT}/\${DATASET}"
+export MODEL_PATH="${MODEL_SLUG}/${CHECKPOINT_ROOT}/\${DATASET}"
 export HF_MODEL="${HF_MODEL}"
 export EVAL_BATCH="${EVAL_BATCH}"
 

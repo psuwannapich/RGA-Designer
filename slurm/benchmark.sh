@@ -56,6 +56,7 @@ DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 
 # ---- Global defaults --------------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
 DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
@@ -75,7 +76,7 @@ mkdir -p "$PROJECT_ROOT/logs"
 PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 # Per-dataset checkpoint — mirrors finetune.sh output layout
-MODEL_PATH="$PROJECT_ROOT/${CHECKPOINT_ROOT}/${DATASET}"
+MODEL_PATH="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
 
 if [[ ! -d "$MODEL_PATH" ]]; then
     echo "ERROR: checkpoint directory not found: $MODEL_PATH"
@@ -101,9 +102,9 @@ LIMIT_FLAG=""
 # ---- Per-dataset paths and arguments ----------------------------------------
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-mkdir -p "$PROJECT_ROOT/${RESULTS_ROOT}/arg_designer"
-OUTPUT_FILE="$PROJECT_ROOT/${RESULTS_ROOT}/arg_designer/${DATASET}_${TIMESTAMP}.jsonl"
-SUMMARY_LOG="$PROJECT_ROOT/${RESULTS_ROOT}/summary.jsonl"
+mkdir -p "$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/arg_designer"
+OUTPUT_FILE="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/arg_designer/${DATASET}_${TIMESTAMP}.jsonl"
+SUMMARY_LOG="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/summary.jsonl"
 
 cd "$PROJECT_ROOT"
 

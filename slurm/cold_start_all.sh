@@ -65,6 +65,7 @@ DATASET_MAX_AGENTS=(4 4 4 4 5 6)   # index: 0=gsm8k 1=aqua 2=multiarith 3=svamp 
 
 # ---- Global defaults (override via env vars) ------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 NUM_TASKS="${NUM_TASKS:-0}"
 NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
@@ -74,7 +75,7 @@ SEED="${SEED:-42}"
 # ---- Select this task's dataset -------------------------------------------
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 DATASET_JSON="${JSONLS[$SLURM_ARRAY_TASK_ID]}"
-OUTPUT_DIR="ColdStartData_hf_${DATASET}"
+OUTPUT_DIR="${MODEL_SLUG}/ColdStartData/${DATASET}"
 
 # Per-dataset agent range (env vars override if set)
 MIN_AGENTS="${MIN_AGENTS:-${DATASET_MIN_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
