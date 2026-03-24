@@ -18,7 +18,7 @@ from mas_framework.utils.globals import Cost, PromptTokens, CompletionTokens
 from sentence_transformers import SentenceTransformer
 from mas_framework.graph.graph import TestGraph
 from experiment.utils import load_model, generate_graph, convert_to_pyg_graph
-from datasets.gsm8k_dataset import svamp_data_process, gsm_get_predict
+from benchmark_datasets.gsm8k_dataset import svamp_data_process, gsm_get_predict
 from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
 
 

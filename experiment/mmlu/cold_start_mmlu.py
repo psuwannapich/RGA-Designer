@@ -16,8 +16,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 import asyncio
 import argparse
 import random
-from datasets.mmlu_dataset import MMLUDataset
-from datasets.MMLU.download import download
+from benchmark_datasets.mmlu_dataset import MMLUDataset
+from benchmark_datasets.MMLU.download import download
 from mas_framework.graph.graph import Graph, TestGraph
 
 

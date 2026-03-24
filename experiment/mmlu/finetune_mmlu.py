@@ -24,7 +24,7 @@ from sentence_transformers import SentenceTransformer
 from experiment import process_dataset as gdata
 
 from mas_framework.graph.graph import Graph, TestGraph
-from datasets.mmlu_dataset import MMLUDataset
+from benchmark_datasets.mmlu_dataset import MMLUDataset
 from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
 
 FINETUNE_DATA_DIR = "/root/ARG-Designer/experiment/FinetuneData_mmlu"

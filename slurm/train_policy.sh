@@ -31,12 +31,12 @@ set -euo pipefail
 
 DATASETS=(gsm8k aqua multiarith svamp humaneval mmlu)
 DATASET_JSONS=(
-    "datasets/gsm8k/gsm8k.jsonl"
-    "datasets/AQuA/AQuA.jsonl"
-    "datasets/MultiArith/MultiArith.json"
-    "datasets/SVAMP/SVAMP.json"
-    "datasets/humaneval/humaneval-py.jsonl"
-    "datasets/MMLU/data"
+    "benchmark_datasets/gsm8k/gsm8k.jsonl"
+    "benchmark_datasets/AQuA/AQuA.jsonl"
+    "benchmark_datasets/MultiArith/MultiArith.json"
+    "benchmark_datasets/SVAMP/SVAMP.json"
+    "benchmark_datasets/humaneval/humaneval-py.jsonl"
+    "benchmark_datasets/MMLU/data"
 )
 
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

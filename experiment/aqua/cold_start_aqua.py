@@ -17,7 +17,7 @@ from mas_framework.graph.graph import Graph, TestGraph
 from mas_framework.tools.reader.readers import JSONLReader
 from experiments.cold_start import get_kwargs, save_graph_with_features
 from SimpleAR.aqua.aqua_prompt_set_adapter import ROLE_DESCRIPTION
-from datasets.aqua_dataset import aqua_data_process, aqua_get_predict
+from benchmark_datasets.aqua_dataset import aqua_data_process, aqua_get_predict
 import SimpleAR.prompt.AQuA_prompt_set
 
 OUTPUT_DIR = "/root/ARG-Designer/experiment/ColdStartData_Aqua"

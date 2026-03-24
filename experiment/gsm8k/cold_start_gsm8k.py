@@ -16,7 +16,7 @@ from mas_framework.graph.graph import Graph, TestGraph
 from mas_framework.tools.reader.readers import JSONLReader
 from experiment.utils import get_kwargs, save_graph_with_features
 from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
-from datasets.gsm8k_dataset import gsm_data_process, gsm_get_predict
+from benchmark_datasets.gsm8k_dataset import gsm_data_process, gsm_get_predict
 
 OUTPUT_DIR = "../ColdStartData_gsm8k"
 TASK_SPLIT_FILE = "./task_split_gsm8k.json"

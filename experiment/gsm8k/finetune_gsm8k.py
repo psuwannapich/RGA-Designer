@@ -24,7 +24,7 @@ from sentence_transformers import SentenceTransformer
 from experiment import process_dataset as gdata
 from mas_framework.graph.graph import Graph, TestGraph
 from mas_framework.tools.reader.readers import JSONLReader
-from datasets.gsm8k_dataset import gsm_data_process, gsm_get_predict
+from benchmark_datasets.gsm8k_dataset import gsm_data_process, gsm_get_predict
 from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
 
 FINETUNE_DATA_DIR = "/root/ARG-Designer/experiment/FinetuneData_gsm8k"

@@ -52,12 +52,12 @@ DATASETS=(
     mmlu        # 5
 )
 DATASET_JSONS=(
-    "datasets/gsm8k/gsm8k.jsonl"            # 0
-    "datasets/AQuA/AQuA.jsonl"              # 1
-    "datasets/MultiArith/MultiArith.json"   # 2
-    "datasets/SVAMP/SVAMP.json"             # 3
-    "datasets/humaneval/humaneval-py.jsonl" # 4
-    "datasets/MMLU/data"                    # 5
+    "benchmark_datasets/gsm8k/gsm8k.jsonl"            # 0
+    "benchmark_datasets/AQuA/AQuA.jsonl"              # 1
+    "benchmark_datasets/MultiArith/MultiArith.json"   # 2
+    "benchmark_datasets/SVAMP/SVAMP.json"             # 3
+    "benchmark_datasets/humaneval/humaneval-py.jsonl" # 4
+    "benchmark_datasets/MMLU/data"                    # 5
 )
 
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

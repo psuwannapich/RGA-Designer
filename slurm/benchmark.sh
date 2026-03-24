@@ -110,7 +110,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/gsm8k/task_split_gsm8k.json"
         uv run python experiment/gsm8k/evaluate_gsm8k.py \
             --model_path      "$MODEL_PATH" \
-            --dataset_path    "$PROJECT_ROOT/datasets/gsm8k/gsm8k.jsonl" \
+            --dataset_path    "$PROJECT_ROOT/benchmark_datasets/gsm8k/gsm8k.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
@@ -124,7 +124,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/aqua/task_split_aqua.json"
         uv run python experiment/aqua/evaluate_aqua.py \
             --model_path      "$MODEL_PATH" \
-            --dataset_path    "$PROJECT_ROOT/datasets/AQuA/AQuA.jsonl" \
+            --dataset_path    "$PROJECT_ROOT/benchmark_datasets/AQuA/AQuA.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
@@ -138,7 +138,7 @@ case "$DATASET" in
         TASK_SPLIT="$PROJECT_ROOT/experiment/humaneval/task_split_humaneval.json"
         uv run python experiment/humaneval/evaluate_humaneval.py \
             --model_path      "$MODEL_PATH" \
-            --dataset_path    "$PROJECT_ROOT/datasets/humaneval/humaneval-py.jsonl" \
+            --dataset_path    "$PROJECT_ROOT/benchmark_datasets/humaneval/humaneval-py.jsonl" \
             --task_split_path "$TASK_SPLIT" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalWriteCode \
@@ -150,9 +150,9 @@ case "$DATASET" in
 
     mmlu)
         # Download MMLU data if not present
-        if [[ ! -d "$PROJECT_ROOT/datasets/MMLU/data/test" ]]; then
+        if [[ ! -d "$PROJECT_ROOT/benchmark_datasets/MMLU/data/test" ]]; then
             echo "MMLU data not found — running download script..."
-            uv run python datasets/MMLU/download.py
+            uv run python benchmark_datasets/MMLU/download.py
             echo "MMLU download complete."
         fi
 
@@ -161,7 +161,7 @@ case "$DATASET" in
 
         uv run python experiment/mmlu/evaluate_mmlu.py \
             --model_path      "$MODEL_PATH" \
-            --data_dir        "$PROJECT_ROOT/datasets/MMLU/data" \
+            --data_dir        "$PROJECT_ROOT/benchmark_datasets/MMLU/data" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
             --summary_log_file "$SUMMARY_LOG" \
@@ -173,7 +173,7 @@ case "$DATASET" in
     multiarith)
         uv run python experiment/multiarith/evaluate_multiarith.py \
             --model_path      "$MODEL_PATH" \
-            --dataset_path    "$PROJECT_ROOT/datasets/MultiArith/MultiArith.json" \
+            --dataset_path    "$PROJECT_ROOT/benchmark_datasets/MultiArith/MultiArith.json" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
             --output_file     "$OUTPUT_FILE" \
@@ -186,7 +186,7 @@ case "$DATASET" in
     svamp)
         uv run python experiment/svamp/evaluate_svamp.py \
             --model_path      "$MODEL_PATH" \
-            --dataset_path    "$PROJECT_ROOT/datasets/SVAMP/SVAMP.json" \
+            --dataset_path    "$PROJECT_ROOT/benchmark_datasets/SVAMP/SVAMP.json" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
             --output_file     "$OUTPUT_FILE" \

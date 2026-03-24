@@ -16,12 +16,12 @@
 # Cold-start dataset generation for ALL supported datasets.
 #
 # Array index → dataset mapping:
-#   0  gsm8k      datasets/gsm8k/gsm8k.jsonl
-#   1  aqua       datasets/AQuA/AQuA.jsonl
-#   2  multiarith datasets/MultiArith/MultiArith.json
-#   3  svamp      datasets/SVAMP/SVAMP.json
-#   4  humaneval  datasets/humaneval/humaneval-py.jsonl
-#   5  mmlu       datasets/MMLU/data  (CSV dir; auto-downloaded if missing)
+#   0  gsm8k      benchmark_datasets/gsm8k/gsm8k.jsonl
+#   1  aqua       benchmark_datasets/AQuA/AQuA.jsonl
+#   2  multiarith benchmark_datasets/MultiArith/MultiArith.json
+#   3  svamp      benchmark_datasets/SVAMP/SVAMP.json
+#   4  humaneval  benchmark_datasets/humaneval/humaneval-py.jsonl
+#   5  mmlu       benchmark_datasets/MMLU/data  (CSV dir; auto-downloaded if missing)
 #
 # Usage — submit all six jobs in parallel:
 #   sbatch slurm/cold_start_all.sh
@@ -48,12 +48,12 @@ DATASETS=(
     mmlu         # 5
 )
 JSONLS=(
-    "datasets/gsm8k/gsm8k.jsonl"            # 0
-    "datasets/AQuA/AQuA.jsonl"              # 1
-    "datasets/MultiArith/MultiArith.json"   # 2
-    "datasets/SVAMP/SVAMP.json"             # 3
-    "datasets/humaneval/humaneval-py.jsonl" # 4
-    "datasets/MMLU/data"                    # 5 — directory, not a single file
+    "benchmark_benchmark_datasets/gsm8k/gsm8k.jsonl"            # 0
+    "benchmark_benchmark_datasets/AQuA/AQuA.jsonl"              # 1
+    "benchmark_benchmark_datasets/MultiArith/MultiArith.json"   # 2
+    "benchmark_benchmark_datasets/SVAMP/SVAMP.json"             # 3
+    "benchmark_benchmark_datasets/humaneval/humaneval-py.jsonl" # 4
+    "benchmark_benchmark_datasets/MMLU/data"                    # 5 — directory, not a single file
 )
 
 # Per-dataset agent counts (from original cold-start scripts)
@@ -96,7 +96,7 @@ echo "========================================"
 # Download MMLU data if this is the mmlu job and the data dir is missing
 if [[ "$DATASET" == "mmlu" && ! -d "$DATASET_JSON/test" ]]; then
     echo "MMLU data not found — running download script..."
-    uv run python datasets/MMLU/download.py
+    uv run python benchmark_benchmark_datasets/MMLU/download.py
     echo "MMLU download complete."
 fi
 

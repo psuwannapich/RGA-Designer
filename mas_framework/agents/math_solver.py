@@ -5,7 +5,7 @@ from mas_framework.agents.agent_registry import AgentRegistry
 from mas_framework.llm.llm_registry import LLMRegistry
 from mas_framework.prompt.prompt_set_registry import PromptSetRegistry
 from mas_framework.tools.coding.python_executor import execute_code_get_return
-from datasets.gsm8k_dataset import gsm_get_predict
+from benchmark_datasets.gsm8k_dataset import gsm_get_predict
 
 @AgentRegistry.register('MathSolver')
 class MathSolver(Node):

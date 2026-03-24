@@ -51,30 +51,30 @@ _ALL_DATASETS  = _MATH_DATASETS | _MCQ_DATASETS | _CODE_DATASETS
 
 def _load_dataset(dataset: str, dataset_json: str):
     if dataset == 'gsm8k':
-        from datasets.gsm8k_dataset import gsm_data_process
+        from benchmark_datasets.gsm8k_dataset import gsm_data_process
         raw = JSONLReader.parse_file(dataset_json)
         return gsm_data_process(raw)
     elif dataset == 'aqua':
-        from datasets.aqua_dataset import aqua_data_process
+        from benchmark_datasets.aqua_dataset import aqua_data_process
         raw = JSONLReader.parse_file(dataset_json)
         return aqua_data_process(raw)
     elif dataset == 'multiarith':
-        from datasets.gsm8k_dataset import multiarith_data_process
+        from benchmark_datasets.gsm8k_dataset import multiarith_data_process
         with open(dataset_json, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         return multiarith_data_process(raw)
     elif dataset == 'svamp':
-        from datasets.gsm8k_dataset import svamp_data_process
+        from benchmark_datasets.gsm8k_dataset import svamp_data_process
         with open(dataset_json, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         return svamp_data_process(raw)
     elif dataset == 'humaneval':
-        from datasets.humaneval_dataset import humaneval_data_process
+        from benchmark_datasets.humaneval_dataset import humaneval_data_process
         raw = JSONLReader.parse_file(dataset_json)
         return humaneval_data_process(raw)
     elif dataset == 'mmlu':
-        from datasets.MMLU.download import download as mmlu_download
-        from datasets.mmlu_dataset import mmlu_data_process
+        from benchmark_datasets.MMLU.download import download as mmlu_download
+        from benchmark_datasets.mmlu_dataset import mmlu_data_process
         mmlu_download()   # no-op if already downloaded
         return mmlu_data_process(dataset_json, split='test')
     else:
@@ -83,16 +83,16 @@ def _load_dataset(dataset: str, dataset_json: str):
 
 def _get_predict(dataset: str, pred_str: str) -> str:
     if dataset in _MATH_DATASETS:
-        from datasets.gsm8k_dataset import gsm_get_predict
+        from benchmark_datasets.gsm8k_dataset import gsm_get_predict
         return gsm_get_predict(pred_str)
     elif dataset == 'aqua':
-        from datasets.aqua_dataset import aqua_get_predict
+        from benchmark_datasets.aqua_dataset import aqua_get_predict
         return aqua_get_predict(pred_str)
     elif dataset == 'mmlu':
-        from datasets.mmlu_dataset import mmlu_get_predict
+        from benchmark_datasets.mmlu_dataset import mmlu_get_predict
         return mmlu_get_predict(pred_str)
     elif dataset in _CODE_DATASETS:
-        from datasets.humaneval_dataset import humaneval_get_predict
+        from benchmark_datasets.humaneval_dataset import humaneval_get_predict
         return humaneval_get_predict(pred_str)
     return pred_str
 
