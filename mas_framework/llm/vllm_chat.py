@@ -146,7 +146,12 @@ class VLLMChat(LLM):
         if max_tokens is None:
             max_tokens = self.DEFAULT_MAX_TOKENS
         if temperature is None:
-            temperature = self.DEFAULT_TEMPERATURE
+            from mas_framework.llm.llm import qwen3_sampling
+            sp = qwen3_sampling()
+            temperature = sp["temperature"]
+        else:
+            from mas_framework.llm.llm import qwen3_sampling
+            sp = qwen3_sampling()
 
         msg_dicts = (
             messages
@@ -160,7 +165,9 @@ class VLLMChat(LLM):
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature if temperature > 0 else 1.0,
-            top_p=0.9 if temperature > 0 else 1.0,
+            top_p=sp["top_p"] if temperature > 0 else 1.0,
+            top_k=sp["top_k"] if temperature > 0 else -1,
+            min_p=0.0,
         )
 
         request_id = str(uuid.uuid4())

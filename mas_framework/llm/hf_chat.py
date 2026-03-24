@@ -112,11 +112,15 @@ class _Batcher:
 
         try:
             with torch.no_grad():
+                from mas_framework.llm.llm import qwen3_sampling
+                sp = qwen3_sampling()
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
                     temperature=temperature if temperature > 0 else 1.0,
                     do_sample=temperature > 0,
+                    top_p=sp["top_p"],
+                    top_k=sp["top_k"],
                     pad_token_id=tokenizer.eos_token_id,
                 )
 
@@ -261,7 +265,8 @@ class HFChat(LLM):
         if max_tokens is None:
             max_tokens = self.DEFAULT_MAX_TOKENS
         if temperature is None:
-            temperature = self.DEFAULT_TEMPERATURE
+            from mas_framework.llm.llm import qwen3_sampling
+            temperature = qwen3_sampling()["temperature"]
 
         msg_dicts = (
             messages
@@ -286,7 +291,8 @@ class HFChat(LLM):
         if max_tokens is None:
             max_tokens = self.DEFAULT_MAX_TOKENS
         if temperature is None:
-            temperature = self.DEFAULT_TEMPERATURE
+            from mas_framework.llm.llm import qwen3_sampling
+            temperature = qwen3_sampling()["temperature"]
 
         msg_dicts = (
             messages
@@ -305,12 +311,16 @@ class HFChat(LLM):
         device = next(model.parameters()).device
         inputs = tokenizer(input_text, return_tensors="pt").to(device)
 
+        from mas_framework.llm.llm import qwen3_sampling
+        sp = qwen3_sampling()
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
                 temperature=temperature if temperature > 0 else 1.0,
                 do_sample=temperature > 0,
+                top_p=sp["top_p"],
+                top_k=sp["top_k"],
                 pad_token_id=tokenizer.eos_token_id,
             )
 
