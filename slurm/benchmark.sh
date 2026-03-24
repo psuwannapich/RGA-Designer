@@ -58,7 +58,8 @@ DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
-export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE PYTHONPATH
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
+export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE DISABLE_THINKING PYTHONPATH
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"        # empty = evaluate all test samples
 SEED="${SEED:-42}"
@@ -166,6 +167,7 @@ case "$DATASET" in
             --data_dir        "$PROJECT_ROOT/benchmark_datasets/MMLU/data" \
             --llm_name        "$HF_MODEL" \
             --decision_method FinalRefer \
+            --output_file     "$OUTPUT_FILE" \
             --summary_log_file "$SUMMARY_LOG" \
             --eval_batch_size "$EVAL_BATCH" \
             --seed            "$SEED" \

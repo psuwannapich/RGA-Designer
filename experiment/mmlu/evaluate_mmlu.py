@@ -8,9 +8,8 @@ import numpy as np
 import argparse
 import random
 from tqdm import tqdm
-from typing import List, Any, Dict, Iterator
+from typing import List, Any, Iterator
 import sys
-import csv
 import datetime
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -50,6 +49,8 @@ def parse_args():
                         help="random seed")
     parser.add_argument('--embedding_model', type=str, default="sentence-transformers/all-MiniLM-L6-v2",
                         help="model for task embeddings")
+    parser.add_argument('--output_file', type=str, default='mmlu_eval_results.jsonl',
+                        help="file to save per-sample evaluation results")
     parser.add_argument('--summary_log_file', type=str, default='./res_logs/evaluation_summary.jsonl',
                         help="log file to record evaluation summaries")
 
@@ -68,6 +69,7 @@ async def evaluate(
 
     accuracy = Accuracy()
     limit_questions = args.limit_questions
+    results_list = []
 
     def eval_loader(batch_size: int) -> Iterator[List[Any]]:
         records = []
@@ -89,13 +91,12 @@ async def evaluate(
 
         start_ts = time.time()
         answer_tasks = []
-        questions = []
+        metadata_list = []
 
         for i, record in enumerate(record_batch):
             input_dict = dataset.record_to_input(record)
             task_text = input_dict['task']
-            questions.append(task_text)
-
+            true_answer = dataset.record_to_target_answer(record)
             question_id = i_batch * args.eval_batch_size + i + 1
 
             task_embedding = torch.tensor(
@@ -117,54 +118,45 @@ async def evaluate(
                 pyg_data=convert_to_pyg_graph(generated_graph[0], task_text)
             )
             answer_tasks.append(asyncio.create_task(tg.arun(input_dict, args.num_rounds)))
+            metadata_list.append({
+                'question_id': question_id,
+                'task_text': task_text,
+                'true_answer': true_answer,
+                'graph': generated_graph[0],
+            })
 
         raw_results = await asyncio.gather(*answer_tasks)
-        is_corrects = []
 
-        for raw_answer, record in zip(raw_results, record_batch):
+        for meta, raw_answer in zip(metadata_list, raw_results):
             answer = dataset.postprocess_answer(raw_answer)
-            correct_answer = dataset.record_to_target_answer(record)
-            is_correct = accuracy.update(answer, correct_answer)
+            is_correct = accuracy.update(answer, meta['true_answer'])
 
             print(f"Accuracy: {accuracy.print()} | "
                   f"Cost: ${Cost.instance().value:.4f} | "
                   f"Tokens: P({int(PromptTokens.instance().value)}), C({int(CompletionTokens.instance().value)})")
 
-            is_corrects.append(is_correct)
+            results_list.append({
+                'id': meta['question_id'],
+                'question': meta['task_text'],
+                'true_answer': meta['true_answer'],
+                'predicted_answer': answer,
+                'raw_response': raw_answer,
+                'is_correct': is_correct,
+                'num_nodes': meta['graph'].number_of_nodes(),
+                'num_edges': meta['graph'].number_of_edges(),
+            })
 
-        for i in range(len(record_batch)):
-            batch_data = [{
-                "dataset": "mmlu",
-                "id": i_batch * args.eval_batch_size + i,
-                "question": questions[i],
-                "mode": "ARGDesigner",
-                "size": args.agent_nums,
-                "is_correct": is_corrects[i]
-            }]
-            write_to_csv(batch_data)
+        # Flush results to disk after every batch (overwrites with full list so far)
+        os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
+        with open(args.output_file, 'w', encoding='utf-8') as f:
+            for r in results_list:
+                f.write(json.dumps(r) + '\n')
 
         print(f"Batch time: {time.time() - start_ts:.3f}s")
 
     accuracy.print()
     print("Evaluation complete!")
     return accuracy.get()
-
-
-def write_to_csv(
-        data: List[Dict],
-        filename: str = "ARGDesigner_results.csv",
-        fieldnames: List[str] = ["dataset", "id", "question", "mode", "size", "is_correct"]
-):
-    """Write result data to CSV file"""
-    file_exists = os.path.isfile(filename)
-
-    with open(filename, mode='a', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerows(data)
 
 
 async def main(ef=True):
@@ -216,7 +208,7 @@ async def main(ef=True):
     print(f"Total Prompt Tokens: {int(final_prompt_tokens)}")
     print(f"Total Completion Tokens: {int(final_completion_tokens)}")
     print("-" * 50)
-    print("Detailed CSV results saved to: ARGDesigner_results.csv")
+    print(f"Detailed results saved to: {args.output_file}")
 
     log_record = {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -228,11 +220,11 @@ async def main(ef=True):
         "cost": final_cost,
         "prompt_tokens": final_prompt_tokens,
         "completion_tokens": final_completion_tokens,
-        "detail_file": "ARGDesigner_results.csv"
+        "detail_file": args.output_file
     }
 
     try:
-        os.makedirs(os.path.dirname(args.summary_log_file), exist_ok=True)
+        os.makedirs(os.path.dirname(args.summary_log_file) or '.', exist_ok=True)
         with open(args.summary_log_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(log_record) + '\n')
         print(f"Summary log appended to: {args.summary_log_file}")

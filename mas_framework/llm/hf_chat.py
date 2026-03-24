@@ -126,11 +126,13 @@ class _Batcher:
                 for out in outputs
             ]
             for i, (_, _, _, loop, fut) in enumerate(batch):
-                loop.call_soon_threadsafe(fut.set_result, results[i])
+                if not fut.done():
+                    loop.call_soon_threadsafe(fut.set_result, results[i])
 
         except Exception as exc:
             for _, _, _, loop, fut in batch:
-                loop.call_soon_threadsafe(fut.set_exception, exc)
+                if not fut.done():
+                    loop.call_soon_threadsafe(fut.set_exception, exc)
 
 
 _batchers: Dict[str, _Batcher] = {}

@@ -84,7 +84,8 @@ PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
-export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE PYTHONPATH
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
+export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE DISABLE_THINKING PYTHONPATH
 NUM_AGENTS="${NUM_AGENTS:-}"          # empty = use per-method default
 SC_SAMPLES="${SC_SAMPLES:-5}"
 LIMIT="${LIMIT:-}"                    # empty = evaluate all
