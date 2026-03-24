@@ -30,8 +30,16 @@ class LLMRegistry:
             # Set USE_VLLM=1 to route through the vLLM backend instead of
             # HuggingFace transformers for higher GPU utilisation.
             if os.getenv('USE_VLLM', '').lower() in ('1', 'true', 'yes'):
-                import mas_framework.llm.vllm_chat  # noqa: F401
-                model = cls.registry.get('VLLMChat', model_name)
+                try:
+                    import mas_framework.llm.vllm_chat  # noqa: F401
+                    model = cls.registry.get('VLLMChat', model_name)
+                except ImportError:
+                    print(
+                        "[LLMRegistry] vLLM not installed — falling back to "
+                        "HuggingFace backend. Install with: uv pip install vllm"
+                    )
+                    import mas_framework.llm.hf_chat  # noqa: F401
+                    model = cls.registry.get('HFChat', model_name)
             else:
                 import mas_framework.llm.hf_chat  # noqa: F401
                 model = cls.registry.get('HFChat', model_name)
