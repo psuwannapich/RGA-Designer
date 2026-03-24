@@ -102,12 +102,13 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="$PROJECT_ROOT/logs/${DATASET}_results_${TIMESTAMP}.jsonl"
 SUMMARY_LOG="$PROJECT_ROOT/logs/evaluation_summary.jsonl"
 
+cd "$PROJECT_ROOT"
+
 case "$DATASET" in
 
     gsm8k)
         TASK_SPLIT="$PROJECT_ROOT/experiment/gsm8k/task_split_gsm8k.json"
-        cd "$PROJECT_ROOT/experiment/gsm8k"
-        uv run python evaluate_gsm8k.py \
+        uv run python experiment/gsm8k/evaluate_gsm8k.py \
             --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/gsm8k/gsm8k.jsonl" \
             --task_split_path "$TASK_SPLIT" \
@@ -121,8 +122,7 @@ case "$DATASET" in
 
     aqua)
         TASK_SPLIT="$PROJECT_ROOT/experiment/aqua/task_split_aqua.json"
-        cd "$PROJECT_ROOT/experiment/aqua"
-        uv run python evaluate_aqua.py \
+        uv run python experiment/aqua/evaluate_aqua.py \
             --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/AQuA/AQuA.jsonl" \
             --task_split_path "$TASK_SPLIT" \
@@ -136,8 +136,7 @@ case "$DATASET" in
 
     humaneval)
         TASK_SPLIT="$PROJECT_ROOT/experiment/humaneval/task_split_humaneval.json"
-        cd "$PROJECT_ROOT/experiment/humaneval"
-        uv run python evaluate_humaneval.py \
+        uv run python experiment/humaneval/evaluate_humaneval.py \
             --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/humaneval/humaneval-py.jsonl" \
             --task_split_path "$TASK_SPLIT" \
@@ -153,16 +152,14 @@ case "$DATASET" in
         # Download MMLU data if not present
         if [[ ! -d "$PROJECT_ROOT/datasets/MMLU/data/test" ]]; then
             echo "MMLU data not found — running download script..."
-            cd "$PROJECT_ROOT"
             uv run python datasets/MMLU/download.py
             echo "MMLU download complete."
         fi
 
-        cd "$PROJECT_ROOT/experiment/mmlu"
         LIMIT_MMLU_FLAG=""
         [[ -n "$LIMIT" ]] && LIMIT_MMLU_FLAG="--limit_questions $LIMIT"
 
-        uv run python evaluate_mmlu.py \
+        uv run python experiment/mmlu/evaluate_mmlu.py \
             --model_path      "$MODEL_PATH" \
             --data_dir        "$PROJECT_ROOT/datasets/MMLU/data" \
             --llm_name        "$HF_MODEL" \
@@ -174,8 +171,7 @@ case "$DATASET" in
         ;;
 
     multiarith)
-        cd "$PROJECT_ROOT/experiment/multiarith"
-        uv run python evaluate_multiarith.py \
+        uv run python experiment/multiarith/evaluate_multiarith.py \
             --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/MultiArith/MultiArith.json" \
             --llm_name        "$HF_MODEL" \
@@ -188,8 +184,7 @@ case "$DATASET" in
         ;;
 
     svamp)
-        cd "$PROJECT_ROOT/experiment/svamp"
-        uv run python evaluate_svamp.py \
+        uv run python experiment/svamp/evaluate_svamp.py \
             --model_path      "$MODEL_PATH" \
             --dataset_path    "$PROJECT_ROOT/datasets/SVAMP/SVAMP.json" \
             --llm_name        "$HF_MODEL" \
