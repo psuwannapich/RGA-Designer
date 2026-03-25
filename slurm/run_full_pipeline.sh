@@ -59,6 +59,7 @@ set -euo pipefail
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                  # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 DISABLE_THINKING="${DISABLE_THINKING:-1}"       # 1 = no-thinking mode (faster)
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 DATASETS_ARRAY="${DATASETS_ARRAY:-0-5}"
 NUM_GPUS="${NUM_GPUS:-2}"
 

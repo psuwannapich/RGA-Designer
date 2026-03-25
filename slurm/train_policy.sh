@@ -51,6 +51,9 @@ DATASET_JSON="$PROJECT_ROOT/${DATASET_JSONS[$SLURM_ARRAY_TASK_ID]}"
 
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                  # Qwen/Qwen3-8B → Qwen-Qwen3-8B
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = no-thinking mode (faster), 0 = thinking mode
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+export DISABLE_THINKING
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 RM_ROOT="${RM_ROOT:-rlhf_checkpoints}"
 POLICY_ROOT="${POLICY_ROOT:-rlhf_checkpoints}"

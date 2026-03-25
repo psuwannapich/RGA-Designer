@@ -42,6 +42,9 @@ FINETUNE_LR="${FINETUNE_LR:-5e-5}"
 COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = no-thinking mode (faster), 0 = thinking mode
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+export DISABLE_THINKING
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$PROJECT_ROOT/logs"
