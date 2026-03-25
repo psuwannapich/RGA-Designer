@@ -118,11 +118,13 @@ def sample_with_logprob(
         pred_emb = model.output_node(node_out)                # [1,1,384]
         proc_cand = model.role_processor(candidate_embs)
         scores = torch.matmul(pred_emb.squeeze(1), proc_cand.t())  # [1, n_cands]
-        probs = F.softmax(scores, dim=-1)                          # [1, n_cands]
-
         if i < min_num_node:
-            probs[:, temp_end_idx] = 0.0
-            probs = probs / (probs.sum(dim=1, keepdim=True) + EPS)
+            # Mask END token by adding -inf to its logit before softmax
+            # (avoids in-place writes that would invalidate the autograd graph)
+            inf_mask = scores.new_zeros(scores.shape)
+            inf_mask[:, temp_end_idx] = float('-inf')
+            scores = scores + inf_mask
+        probs = F.softmax(scores, dim=-1)                          # [1, n_cands]
 
         sampled_id = torch.multinomial(probs, 1).reshape(-1)   # [1]
         # Accumulate log π(node_type | context)

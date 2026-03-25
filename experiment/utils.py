@@ -115,7 +115,16 @@ def load_model(model_dir, ef=False):
 
     saved_args = checkpoint['args']
     data_statistics = checkpoint['data_statistics']
-    saved_args['data_dir'] = saved_args.get('data_dir', model_dir)
+    # Restore data_dir: if the saved path no longer exists, derive the correct
+    # ColdStartData/{dataset} path from model_dir (structure: .../MODEL_SLUG/checkpoints/DATASET)
+    saved_data_dir = saved_args.get('data_dir', '')
+    if not saved_data_dir or not os.path.exists(saved_data_dir):
+        dataset = saved_args.get('dataset', '')
+        model_slug_dir = os.path.dirname(os.path.dirname(os.path.abspath(model_dir)))
+        derived = os.path.join(model_slug_dir, 'ColdStartData', dataset)
+        saved_args['data_dir'] = derived
+    else:
+        saved_args['data_dir'] = saved_data_dir
     args = Args()
     args.update_args_from_dict(saved_args)
     args.device = device
