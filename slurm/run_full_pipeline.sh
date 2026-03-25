@@ -56,7 +56,7 @@
 set -euo pipefail
 
 # ---- Configuration ----------------------------------------------------------
-HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                  # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 DISABLE_THINKING="${DISABLE_THINKING:-1}"       # 1 = no-thinking mode (faster)
 MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
@@ -221,7 +221,6 @@ echo "   2.5 finetune    : $FINETUNE_JOB       ← waits for $TRAIN_JOB"
 echo ""
 echo "  [Track A — benchmarks, parallel after finetune]"
 echo "   3a  benchmark   : $BENCH_JOB          ← waits for $FINETUNE_JOB"
-echo "   3b  baselines   : $BASE_JOB           ← waits for $FINETUNE_JOB"
 echo ""
 echo "  [Track B — RLHF, parallel after finetune]"
 echo "   4   collect     : $COLLECT_JOB        ← waits for $FINETUNE_JOB"
