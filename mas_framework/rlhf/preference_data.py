@@ -259,7 +259,7 @@ class PreferencePairDataset(Dataset):
     Shards are memory-mapped lazily: only the requested shard is unpickled.
     """
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, exclude_both_wrong: bool = False):
         self.data_dir = data_dir
         shard_paths = sorted(
             os.path.join(data_dir, f)
@@ -272,15 +272,22 @@ class PreferencePairDataset(Dataset):
         # Build flat index: (shard_path, local_idx)
         self._index: List[Tuple[str, int]] = []
         self._shard_cache: Dict[str, List[PreferencePair]] = {}
+        n_excluded = 0
 
         for path in shard_paths:
             with open(path, "rb") as f:
                 shard: List[PreferencePair] = pickle.load(f)
             self._shard_cache[path] = shard
-            for i in range(len(shard)):
+            for i, pair in enumerate(shard):
+                if exclude_both_wrong and not pair.chosen_is_correct and not pair.rejected_is_correct:
+                    n_excluded += 1
+                    continue
                 self._index.append((path, i))
 
-        print(f"PreferencePairDataset: {len(self._index)} pairs from {len(shard_paths)} shards")
+        msg = f"PreferencePairDataset: {len(self._index)} pairs from {len(shard_paths)} shards"
+        if exclude_both_wrong and n_excluded:
+            msg += f" ({n_excluded} both-wrong pairs excluded)"
+        print(msg)
 
     def __len__(self) -> int:
         return len(self._index)
@@ -299,6 +306,8 @@ class PreferencePairDataset(Dataset):
             "task_embedding": task_emb,
             "chosen_score": torch.tensor(pair.chosen_score, dtype=torch.float32),
             "rejected_score": torch.tensor(pair.rejected_score, dtype=torch.float32),
+            "chosen_is_correct": torch.tensor(pair.chosen_is_correct, dtype=torch.bool),
+            "rejected_is_correct": torch.tensor(pair.rejected_is_correct, dtype=torch.bool),
         }
 
     @staticmethod
@@ -311,4 +320,6 @@ class PreferencePairDataset(Dataset):
             "task_embedding": torch.stack([item["task_embedding"] for item in batch]),
             "chosen_score": torch.stack([item["chosen_score"] for item in batch]),
             "rejected_score": torch.stack([item["rejected_score"] for item in batch]),
+            "chosen_is_correct": torch.stack([item["chosen_is_correct"] for item in batch]),
+            "rejected_is_correct": torch.stack([item["rejected_is_correct"] for item in batch]),
         }

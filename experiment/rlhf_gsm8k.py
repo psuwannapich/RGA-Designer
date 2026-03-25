@@ -166,6 +166,7 @@ def _train_rm(args):
         batch_size=args.rm_batch_size,
         val_fraction=args.rm_val_fraction,
         save_path=args.rm_checkpoint,
+        both_wrong_weight=args.both_wrong_weight,
     )
 
 
@@ -290,6 +291,10 @@ def parse_args():
     p.add_argument("--rm_hidden_dim", type=int, default=256)
     p.add_argument("--rm_output_dim", type=int, default=128)
     p.add_argument("--rm_val_fraction", type=float, default=0.1)
+    p.add_argument("--both_wrong_weight", type=float, default=0.2,
+                   help="Loss weight for pairs where both candidates are incorrect "
+                        "(default: 0.2). Set to 0 to remove them entirely; "
+                        "set to 1.0 to disable down-weighting.")
 
     # Policy
     p.add_argument("--model_dir", default="",
