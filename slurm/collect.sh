@@ -89,6 +89,7 @@ CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"         # optional: path to trained ARGDesigner checkpoint
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"  # space-separated temperature list
 COLDSTART_DIRS="${COLDSTART_DIRS:-}"      # optional: space-separated .pt directories (no LLM re-inference)
+ARG_MODEL_SAMPLES="${ARG_MODEL_SAMPLES:-}"  # optional: number of unique ARGDesigner graphs per task
 
 echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
@@ -123,7 +124,8 @@ uv run rlhf \
     --seed           "$SEED" \
     --sample_temperatures $SAMPLE_TEMPERATURES \
     ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
-    ${COLDSTART_DIRS:+--coldstart_dirs $COLDSTART_DIRS}
+    ${COLDSTART_DIRS:+--coldstart_dirs $COLDSTART_DIRS} \
+    ${ARG_MODEL_SAMPLES:+--arg_model_samples "$ARG_MODEL_SAMPLES"}
 
 echo "========================================"
 echo "Collect complete for $DATASET"
