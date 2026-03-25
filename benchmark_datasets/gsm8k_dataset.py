@@ -109,9 +109,16 @@ def gsm_get_predict(pred_str):
         
     if pred.isdigit():
         return pred
-    else:
-        matches = re.findall(r'\d+', pred)
-        return matches[-1] if matches else '0'
+    # Handle decimals like "16.00" → "16" before falling back to digit extraction.
+    try:
+        num = float(pred)
+        if num == int(num):
+            return str(int(num))
+        return str(num)
+    except (ValueError, TypeError):
+        pass
+    matches = re.findall(r'\d+', pred)
+    return matches[-1] if matches else '0'
 
 
 def _fix_sqrt(string):
