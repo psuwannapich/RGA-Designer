@@ -108,6 +108,13 @@ async def _collect(args):
         token_cost=args.w_token,
     )
 
+    arg_model = None
+    if args.arg_model_dir:
+        from experiment.utils import load_model
+        print(f"Loading ARGDesigner model from {args.arg_model_dir} ...")
+        arg_model = load_model(args.arg_model_dir, ef=True)
+        arg_model.eval()
+
     collector = RLHFDataCollector(
         domain=args.dataset,
         llm_name=args.llm_name,
@@ -120,6 +127,8 @@ async def _collect(args):
         weights=weights,
         pair_margin=args.pair_margin,
         timeout=args.llm_timeout,
+        arg_model=arg_model,
+        sample_temperatures=args.sample_temperatures,
     )
 
     total = await collector.collect_dataset(
@@ -264,6 +273,13 @@ def parse_args():
     p.add_argument("--checkpoint_every", type=int, default=20)
     p.add_argument("--llm_timeout", type=int, default=600,
                    help="Seconds to wait for a single LLM graph run (default: 600)")
+    p.add_argument("--arg_model_dir", default=None,
+                   help="Optional: pretrained ARGDesigner checkpoint dir for model-based "
+                        "candidate generation during collect phase")
+    p.add_argument("--sample_temperatures", type=float, nargs="+",
+                   default=None,
+                   help="Temperatures for ARGDesigner candidate sampling "
+                        "(default: 1.0 1.5 2.0). Higher T → more structural diversity.")
 
     # Reward model
     p.add_argument("--rm_checkpoint", default=None,

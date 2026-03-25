@@ -135,14 +135,20 @@ def load_model(model_dir, ef=False):
     return model
 
 
-def generate_graph(model, task_embedding, role_constraints_dict, question_id=None):
+def generate_graph(model, task_embedding, role_constraints_dict, question_id=None, temperature=1.0):
     """
     Generate a graph structure for the given task embedding.
+
+    temperature controls sampling diversity (analogous to LLM temperature):
+      > 1.0 — flatter distributions, more varied graphs
+      = 1.0 — original model behaviour
+      < 1.0 — sharper distributions, more deterministic graphs
     """
     with torch.no_grad():
         generated = model.sample(num_samples=1, batch_size=1,
                                  task_embedding=task_embedding,
-                                 question_id=question_id, vis=True)
+                                 question_id=question_id, vis=True,
+                                 temperature=temperature)
     results = []
     for g in generated:
         for n in g.nodes():

@@ -565,7 +565,7 @@ class ARGDesigner(nn.Module):
         log_probs = -swapped_loss
         return log_probs, role_accuracy
 
-    def sample(self, num_samples=10, batch_size=1, task_embedding=None, question_id=None, vis=False):
+    def sample(self, num_samples=10, batch_size=1, task_embedding=None, question_id=None, vis=False, temperature=1.0):
         role_embeddings_dict_full = self.precomputed_embeddings
         all_roles = list(role_embeddings_dict_full.keys())
         selected_roles_names = all_roles[:]
@@ -660,10 +660,11 @@ class ARGDesigner(nn.Module):
 
                 proc_cand = self.role_processor(candidate_embs)
                 scores = torch.matmul(pred_node_emb.squeeze(1), proc_cand.t())
-                probs = F.softmax(scores, dim=-1)
                 if i < min_num_node:
-                    probs[:, temp_end_idx] = 0
-                probs = probs / (probs.sum(dim=1, keepdim=True) + EPS)
+                    inf_mask = scores.new_zeros(scores.shape)
+                    inf_mask[:, temp_end_idx] = float('-inf')
+                    scores = scores + inf_mask
+                probs = F.softmax(scores / temperature, dim=-1)
 
                 sample_out = torch.multinomial(probs, 1).reshape(-1)
                 full_out = torch.full((batch_size,), temp_end_idx, device=self.args.device, dtype=torch.long)
@@ -700,7 +701,11 @@ class ARGDesigner(nn.Module):
                         edge_input = self.edge_project(edge_input)
                     edge_out, h_edge = self.edge_gru(edge_input, h_edge)
                     edge_pred = self.output_edge(edge_out).view(len(active), self.len_edge_vec)
-                    exists = torch.bernoulli(edge_pred[:, HAS_EDGE_TOKEN]).long()
+                    # Apply temperature via log-odds: recover logit, scale by 1/T, re-apply sigmoid
+                    edge_p = edge_pred[:, HAS_EDGE_TOKEN].clamp(EPS, 1.0 - EPS)
+                    edge_logit = torch.log(edge_p / (1.0 - edge_p))
+                    edge_p_t = torch.sigmoid(edge_logit / temperature)
+                    exists = torch.bernoulli(edge_p_t).long()
                     next_input = torch.zeros(len(active), 1, self.len_edge_vec, device=self.args.device)
                     next_input[:, 0, exists] = 1
                     edge_input = next_input
