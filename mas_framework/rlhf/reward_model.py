@@ -95,15 +95,20 @@ class GraphRewardModel(nn.Module):
 
     @staticmethod
     def bradley_terry_loss(
-        chosen_reward: torch.Tensor,    # [B]
-        rejected_reward: torch.Tensor,  # [B]
+        chosen_reward: torch.Tensor,            # [B]
+        rejected_reward: torch.Tensor,          # [B]
+        weights: Optional[torch.Tensor] = None, # [B] per-pair importance weights
     ) -> torch.Tensor:
         """
-        L = -mean( log σ(r_chosen − r_rejected) )
+        L = -mean( w_i * log σ(r_chosen_i − r_rejected_i) )
 
-        Equivalent to binary cross-entropy on the "chosen is better" label.
+        weights down-scales uninformative pairs (e.g. both wrong, 0 < w < 1).
+        When weights is None reduces to the standard unweighted mean.
         """
-        return -F.logsigmoid(chosen_reward - rejected_reward).mean()
+        per_pair = -F.logsigmoid(chosen_reward - rejected_reward)   # [B]
+        if weights is not None:
+            per_pair = per_pair * weights
+        return per_pair.mean()
 
     # ------------------------------------------------------------------
     # Convenience

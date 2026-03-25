@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from mas_framework.graph.graph import Graph, TestGraph
@@ -34,7 +35,7 @@ from mas_framework.rlhf.preference_data import (
     create_preference_pairs,
 )
 from mas_framework.rlhf.token_estimator import estimate_tokens
-from experiment.utils import get_kwargs
+from experiment.utils import get_kwargs, generate_graph, convert_to_pyg_graph
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,13 @@ def _default_configs(
             roles = random.choices(available_roles, k=n)
             configs.append((mode, n, roles))
     return configs
+
+
+# Default temperatures used for model-based candidate generation.
+# T=1.0 reproduces the model's trained distribution; higher values flatten
+# the role/edge distributions to encourage structural diversity, analogous
+# to temperature sampling in autoregressive LLMs.
+DEFAULT_SAMPLE_TEMPERATURES: List[float] = [1.0, 1.5, 2.0]
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +96,8 @@ class RLHFDataCollector:
         weights: Optional[PreferenceWeights] = None,
         pair_margin: float = 0.05,
         timeout: int = 600,
+        arg_model=None,
+        sample_temperatures: Optional[List[float]] = None,
     ):
         self.domain = domain
         self.llm_name = llm_name
@@ -100,6 +110,11 @@ class RLHFDataCollector:
         self.weights = weights or PreferenceWeights()
         self.pair_margin = pair_margin
         self.timeout = timeout
+        # Optional trained ARGDesigner model for richer candidate generation.
+        # One graph is sampled per temperature value; higher T → more varied structure.
+        self.arg_model = arg_model
+        self.sample_temperatures = sample_temperatures if sample_temperatures is not None \
+            else DEFAULT_SAMPLE_TEMPERATURES
 
         self._sentence_model = None   # lazy-loaded once
 
@@ -187,6 +202,60 @@ class RLHFDataCollector:
             "domain": self.domain,
         }
 
+    async def _run_nx_graph(
+        self,
+        nx_g: nx.DiGraph,
+        record: Dict[str, Any],
+        label: str,
+        task_embedding: np.ndarray,
+    ) -> Optional[Dict]:
+        """Run one NetworkX graph on one task; return a result dict or None."""
+        task_text = record["task"]
+
+        # Apply role constraints then convert to PyG
+        model = self._get_sentence_model()
+        for n in nx_g.nodes():
+            role = nx_g.nodes[n].get("role", "Unknown")
+            nx_g.nodes[n]["constraint"] = self.role_descriptions.get(role, "")
+            nx_g.nodes[n]["role_embedding"] = model.encode(role)
+
+        pyg_data = convert_to_pyg_graph(nx_g, task_text)
+        tg = TestGraph(
+            domain=self.domain,
+            llm_name=self.llm_name,
+            decision_method=self.decision_method,
+            pyg_data=pyg_data,
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                tg.arun({"task": task_text}, self.num_rounds), timeout=self.timeout
+            )
+        except Exception as e:
+            import traceback
+            print(f"  [skip] {label}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            return None
+
+        raw = result[0] if isinstance(result, (list, tuple)) else result
+        if isinstance(raw, list) and raw:
+            raw = raw[0]
+        raw = str(raw) if not isinstance(raw, str) else raw
+
+        predicted = self.get_predict(raw)
+        is_correct = self.answer_checker(predicted, record["answer"])
+
+        return {
+            "task_question": task_text,
+            "task_embedding": task_embedding,
+            "graph_snapshot": GraphSnapshot.from_nx(nx_g),
+            "is_correct": is_correct,
+            "num_nodes": nx_g.number_of_nodes(),
+            "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
+            "mode": label,
+            "domain": self.domain,
+        }
+
     # ------------------------------------------------------------------
     # Per-task collection
     # ------------------------------------------------------------------
@@ -196,6 +265,7 @@ class RLHFDataCollector:
         record: Dict[str, Any],
         min_agents: int = 2,
         max_agents: int = 4,
+        extra_results: Optional[List[Dict]] = None,
     ) -> List[PreferencePair]:
         available_roles = list(self.role_descriptions.keys())
         configs = _default_configs(available_roles, min_agents, max_agents)
@@ -227,6 +297,51 @@ class RLHFDataCollector:
             result = await self._run_graph(g, record, m, n, task_embedding)
             raw_results.append(result)
 
+        # --- ARGDesigner model-based candidates (temperature sampling) ---
+        # Each entry in sample_temperatures produces one independently sampled graph.
+        # Higher T flattens the role/edge distributions → more structural diversity,
+        # analogous to temperature sampling in autoregressive LLMs.
+        if self.arg_model is not None:
+            emb_tensor = torch.tensor(
+                task_embedding, device=self.arg_model.args.device
+            ).float()
+            for temp in self.sample_temperatures:
+                try:
+                    graphs = generate_graph(
+                        self.arg_model, emb_tensor, self.role_descriptions,
+                        temperature=temp,
+                    )
+                    if graphs:
+                        result = await self._run_nx_graph(
+                            graphs[0], record, f"arg_model_T{temp:.2f}", task_embedding
+                        )
+                        raw_results.append(result)
+                except Exception as e:
+                    print(f"  [skip arg_model T={temp}] {type(e).__name__}: {e}")
+
+        # --- ColdStart / Finetune pre-collected graphs ---
+        # Injected here so they compete with LLM-collected graphs in the same
+        # create_preference_pairs() call, enabling cross-source pairing.
+        if extra_results:
+            for r in extra_results:
+                nx_g = r["nx_graph"]
+                # Add role embeddings if absent (needed by GraphSnapshot)
+                model = self._get_sentence_model()
+                for n in nx_g.nodes():
+                    if "role_embedding" not in nx_g.nodes[n]:
+                        role = nx_g.nodes[n].get("role", "Unknown")
+                        nx_g.nodes[n]["role_embedding"] = model.encode(role)
+                raw_results.append({
+                    "task_question":    record["task"],
+                    "task_embedding":   task_embedding,
+                    "graph_snapshot":   GraphSnapshot.from_nx(nx_g),
+                    "is_correct":       r["is_correct"],
+                    "num_nodes":        r["num_nodes"],
+                    "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
+                    "mode":             r.get("mode", "coldstart"),
+                    "domain":           self.domain,
+                })
+
         results = [r for r in raw_results if isinstance(r, dict)]
         if len(results) < 2:
             return []
@@ -244,10 +359,16 @@ class RLHFDataCollector:
         min_agents: int = 2,
         max_agents: int = 4,
         checkpoint_every: int = 20,
+        coldstart_pool: Optional[Dict[str, List[Dict]]] = None,
     ) -> int:
         """
         Collect preference pairs for all tasks, writing .pkl shards to
         *output_dir* every *checkpoint_every* tasks.
+
+        coldstart_pool maps task question → list of pre-loaded graph dicts
+        (from ColdStart / Finetune .pt files).  When provided, those graphs
+        are injected into the same pairing pool as the LLM-collected graphs,
+        enabling cross-source preference pairs for the same task.
 
         Returns the total number of preference pairs collected.
         """
@@ -257,7 +378,9 @@ class RLHFDataCollector:
         total_pairs = 0
 
         for i, record in enumerate(tqdm(task_records, desc="RLHF collection")):
-            pairs = await self.collect_for_task(record, min_agents, max_agents)
+            extra = (coldstart_pool or {}).get(record["task"], [])
+            pairs = await self.collect_for_task(record, min_agents, max_agents,
+                                                extra_results=extra or None)
             buffer.extend(pairs)
             total_pairs += len(pairs)
 

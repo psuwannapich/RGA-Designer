@@ -24,11 +24,18 @@
 #   5  mmlu
 #
 # Optional env vars:
-#   HF_MODEL          HuggingFace model ID    (default: Qwen/Qwen3-8B)
-#   NUM_TASKS         tasks to sample         (default: 100)
-#   NUM_GPUS          GPUs per job            (default: 2)
-#   PREFERENCE_ROOT   root dir for output     (default: rlhf_data)
-#   DATASETS_ARRAY    Slurm array spec        (default: 0-5)
+#   HF_MODEL                  HuggingFace model ID    (default: Qwen/Qwen3-8B)
+#   NUM_TASKS                 tasks to sample         (default: 100)
+#   NUM_GPUS                  GPUs per job            (default: 2)
+#   PREFERENCE_ROOT           root dir for output     (default: rlhf_data)
+#   DATASETS_ARRAY            Slurm array spec        (default: 0-5)
+#   ARG_MODEL_DIR             trained ARGDesigner checkpoint dir for model-based
+#                             candidate generation (optional; uses default configs only if unset)
+#   SAMPLE_TEMPERATURES       space-separated temperature list for diversity sampling
+#                             (default: "1.0 1.5 2.0"; higher T → more structural variety)
+#   COLDSTART_DIRS            space-separated .pt directories to convert without LLM re-inference
+#                             e.g. "MODEL/ColdStartData/gsm8k MODEL/ColdStartData/gsm8k_ef"
+#   CHECKPOINT_ROOT           checkpoint sub-dir (default: checkpoints)
 #
 # Usage:
 #   sbatch slurm/collect.sh
@@ -64,6 +71,7 @@ MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
 DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE DISABLE_THINKING PYTHONPATH
 NUM_TASKS="${NUM_TASKS:-100}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
@@ -77,6 +85,10 @@ PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
 SEED="${SEED:-42}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
+ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"         # optional: path to trained ARGDesigner checkpoint
+SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"  # space-separated temperature list
+COLDSTART_DIRS="${COLDSTART_DIRS:-}"      # optional: space-separated .pt directories (no LLM re-inference)
 
 echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
@@ -86,6 +98,8 @@ echo "HF Model      : $HF_MODEL"
 echo "Num tasks     : $NUM_TASKS"
 echo "Max agents    : $MAX_AGENTS"
 echo "Preference dir: $PREFERENCE_DIR"
+echo "ARG model dir : ${ARG_MODEL_DIR:-none (default configs only)}"
+echo "Sample temps  : $SAMPLE_TEMPERATURES"
 echo "Started at    : $(date)"
 echo "========================================"
 
@@ -106,7 +120,10 @@ uv run rlhf \
     --pair_margin    "$PAIR_MARGIN" \
     --checkpoint_every "$CHECKPOINT_EVERY" \
     --llm_timeout    "$LLM_TIMEOUT" \
-    --seed           "$SEED"
+    --seed           "$SEED" \
+    --sample_temperatures $SAMPLE_TEMPERATURES \
+    ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
+    ${COLDSTART_DIRS:+--coldstart_dirs $COLDSTART_DIRS}
 
 echo "========================================"
 echo "Collect complete for $DATASET"

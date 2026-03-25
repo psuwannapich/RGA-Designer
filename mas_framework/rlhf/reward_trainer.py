@@ -29,6 +29,7 @@ def train_reward_model(
     val_fraction: float = 0.1,
     save_path: Optional[str] = None,
     weight_decay: float = 1e-4,
+    both_wrong_weight: float = 0.2,
 ) -> GraphRewardModel:
     """
     Train *model* on preference pairs stored as .pkl shards in *data_dir*.
@@ -40,16 +41,20 @@ def train_reward_model(
     device       : torch device
     epochs       : training epochs
     lr           : Adam learning rate
-    batch_size   : mini-batch size
-    val_fraction : fraction of data reserved for validation
-    save_path    : if given, save best checkpoint here
-    weight_decay : AdamW weight decay
+    batch_size         : mini-batch size
+    val_fraction       : fraction of data reserved for validation
+    save_path          : if given, save best checkpoint here
+    weight_decay       : AdamW weight decay
+    both_wrong_weight  : loss multiplier for pairs where both chosen and rejected
+                         are incorrect (default 0.2). These pairs carry no
+                         correctness signal — only noisy efficiency differences —
+                         so they should contribute less to the gradient.
 
     Returns
     -------
     Trained model (same object, best weights restored if save_path was set).
     """
-    dataset = PreferencePairDataset(data_dir)
+    dataset = PreferencePairDataset(data_dir, exclude_both_wrong=(both_wrong_weight == 0.0))
     n = len(dataset)
     val_size = max(1, int(n * val_fraction))
     train_size = n - val_size
@@ -85,10 +90,19 @@ def train_reward_model(
             chosen = batch["chosen"].to(device)
             rejected = batch["rejected"].to(device)
 
+            # both_wrong_weight == 0: pairs already filtered at dataset load time.
+            # 0 < both_wrong_weight < 1: down-scale their loss contribution.
+            pair_weights = None
+            if 0.0 < both_wrong_weight < 1.0:
+                both_wrong = ~batch["chosen_is_correct"].to(device) & ~batch["rejected_is_correct"].to(device)
+                pair_weights = torch.where(both_wrong,
+                                           torch.full_like(both_wrong, both_wrong_weight, dtype=torch.float),
+                                           torch.ones(both_wrong.shape, device=device))
+
             r_chosen = model(chosen.x, chosen.edge_index, chosen.batch)
             r_rejected = model(rejected.x, rejected.edge_index, rejected.batch)
 
-            loss = GraphRewardModel.bradley_terry_loss(r_chosen, r_rejected)
+            loss = GraphRewardModel.bradley_terry_loss(r_chosen, r_rejected, pair_weights)
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -108,10 +122,17 @@ def train_reward_model(
                 chosen = batch["chosen"].to(device)
                 rejected = batch["rejected"].to(device)
 
+                pair_weights = None
+                if 0.0 < both_wrong_weight < 1.0:
+                    both_wrong = ~batch["chosen_is_correct"].to(device) & ~batch["rejected_is_correct"].to(device)
+                    pair_weights = torch.where(both_wrong,
+                                               torch.full_like(both_wrong, both_wrong_weight, dtype=torch.float),
+                                               torch.ones(both_wrong.shape, device=device))
+
                 r_chosen = model(chosen.x, chosen.edge_index, chosen.batch)
                 r_rejected = model(rejected.x, rejected.edge_index, rejected.batch)
 
-                loss = GraphRewardModel.bradley_terry_loss(r_chosen, r_rejected)
+                loss = GraphRewardModel.bradley_terry_loss(r_chosen, r_rejected, pair_weights)
                 val_loss += loss.item()
                 val_acc += (r_chosen > r_rejected).float().mean().item()
                 n_val += 1

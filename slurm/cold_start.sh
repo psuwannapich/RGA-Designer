@@ -36,6 +36,9 @@ set -euo pipefail
 # ---- User-configurable defaults -------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = no-thinking mode (faster), 0 = thinking mode
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+export DISABLE_THINKING
 DATASET="${DATASET:-gsm8k}"
 DATASET_JSON="${DATASET_JSON:-benchmark_datasets/${DATASET}/${DATASET}.jsonl}"
 NUM_TASKS="${NUM_TASKS:-0}"

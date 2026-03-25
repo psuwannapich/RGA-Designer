@@ -71,6 +71,9 @@ TASK_SPLIT_RAW="${TASK_SPLIT_PATHS[$SLURM_ARRAY_TASK_ID]}"
 
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = no-thinking mode (faster), 0 = thinking mode
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+export DISABLE_THINKING
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 GRAPHS_ROOT="${GRAPHS_ROOT:-graphs}"
 LIMIT="${LIMIT:-}"

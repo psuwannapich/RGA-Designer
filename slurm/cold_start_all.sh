@@ -66,6 +66,9 @@ DATASET_MAX_AGENTS=(4 4 4 4 5 6)   # index: 0=gsm8k 1=aqua 2=multiarith 3=svamp 
 # ---- Global defaults (override via env vars) ------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
+DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = no-thinking mode (faster), 0 = thinking mode
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+export DISABLE_THINKING
 NUM_TASKS="${NUM_TASKS:-0}"
 NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
