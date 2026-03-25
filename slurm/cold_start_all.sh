@@ -38,10 +38,6 @@
 
 set -euo pipefail
 
-# Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
-_SLURM_DIR="${SLURM_SUBMIT_DIR:+${SLURM_SUBMIT_DIR}/slurm}"
-source "${_SLURM_DIR:-$(dirname "${BASH_SOURCE[0]}")}/setup_cuda.sh"
-
 # ---- Dataset registry (indices must match --array range above) ------------
 DATASETS=(
     gsm8k        # 0
@@ -77,6 +73,7 @@ NUM_ROUNDS="${NUM_ROUNDS:-1}"
 SEED="${SEED:-42}"
 
 # ---- Select this task's dataset -------------------------------------------
+SLURM_ARRAY_TASK_ID=1
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 DATASET_JSON="${JSONLS[$SLURM_ARRAY_TASK_ID]}"
 OUTPUT_DIR="${MODEL_SLUG}/ColdStartData/${DATASET}"
