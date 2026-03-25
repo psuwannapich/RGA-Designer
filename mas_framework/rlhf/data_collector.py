@@ -20,7 +20,8 @@ import copy
 import os
 import pickle
 import random
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import itertools
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import networkx as nx
 import numpy as np
@@ -64,6 +65,13 @@ def _default_configs(
 DEFAULT_SAMPLE_TEMPERATURES: List[float] = [1.0, 1.5, 2.0]
 
 
+def _graph_fingerprint(nx_g: nx.DiGraph) -> tuple:
+    """Stable fingerprint for deduplication: (num_nodes, sorted_edges, sorted_roles)."""
+    roles = tuple(nx_g.nodes[n].get("role", "Unknown") for n in sorted(nx_g.nodes()))
+    edges = tuple(sorted((int(u), int(v)) for u, v in nx_g.edges()))
+    return (nx_g.number_of_nodes(), edges, roles)
+
+
 # ---------------------------------------------------------------------------
 # Main collector
 # ---------------------------------------------------------------------------
@@ -98,6 +106,7 @@ class RLHFDataCollector:
         timeout: int = 600,
         arg_model=None,
         sample_temperatures: Optional[List[float]] = None,
+        arg_model_samples: Optional[int] = None,
     ):
         self.domain = domain
         self.llm_name = llm_name
@@ -111,10 +120,14 @@ class RLHFDataCollector:
         self.pair_margin = pair_margin
         self.timeout = timeout
         # Optional trained ARGDesigner model for richer candidate generation.
-        # One graph is sampled per temperature value; higher T → more varied structure.
+        # Temperatures are cycled when more samples are needed than len(temperatures).
         self.arg_model = arg_model
         self.sample_temperatures = sample_temperatures if sample_temperatures is not None \
             else DEFAULT_SAMPLE_TEMPERATURES
+        # Number of unique ARGDesigner graphs to generate per task.
+        # None = auto: len(temperatures) when _default_configs also runs,
+        #              len(temperatures)*3 when _default_configs is skipped.
+        self.arg_model_samples = arg_model_samples
 
         self._sentence_model = None   # lazy-loaded once
 
@@ -268,69 +281,36 @@ class RLHFDataCollector:
         extra_results: Optional[List[Dict]] = None,
     ) -> List[PreferencePair]:
         available_roles = list(self.role_descriptions.keys())
-        configs = _default_configs(available_roles, min_agents, max_agents)
         task_embedding = self._encode_task(record["task"])
 
-        # Build all graph instances first (cheap)
-        graph_runs = []
-        for mode, n, roles in configs:
-            kwargs = get_kwargs(mode, n)
-            kwargs["node_kwargs"] = [{"role": r} for r in roles]
-            try:
-                g = Graph(
-                    domain=self.domain,
-                    llm_name=self.llm_name,
-                    agent_names=[self.agent_name] * n,
-                    decision_method=self.decision_method,
-                    **kwargs,
-                )
-                graph_runs.append((g, mode, n))
-            except Exception as e:
-                import traceback
-                print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
-                traceback.print_exc()
+        # _default_configs is skipped when richer candidates are already available:
+        # either the ARGDesigner model can generate them, or the coldstart pool
+        # already covers this task.  In those cases _default_configs would just
+        # add expensive LLM inference for graphs already explored during cold-start.
+        has_coldstart = bool(extra_results)
+        use_default_configs = (self.arg_model is None) and (not has_coldstart)
 
-        # Run graphs sequentially — local HF models process one request at a
-        # time, so concurrent calls just queue up and hit the timeout.
         raw_results = []
-        for g, m, n in graph_runs:
-            result = await self._run_graph(g, record, m, n, task_embedding)
-            raw_results.append(result)
+        # Fingerprints of all graphs already in raw_results — used to deduplicate
+        # ARGDesigner candidates against both coldstart graphs and each other.
+        seen_fps: Set[tuple] = set()
 
-        # --- ARGDesigner model-based candidates (temperature sampling) ---
-        # Each entry in sample_temperatures produces one independently sampled graph.
-        # Higher T flattens the role/edge distributions → more structural diversity,
-        # analogous to temperature sampling in autoregressive LLMs.
-        if self.arg_model is not None:
-            emb_tensor = torch.tensor(
-                task_embedding, device=self.arg_model.args.device
-            ).float()
-            for temp in self.sample_temperatures:
-                try:
-                    graphs = generate_graph(
-                        self.arg_model, emb_tensor, self.role_descriptions,
-                        temperature=temp,
-                    )
-                    if graphs:
-                        result = await self._run_nx_graph(
-                            graphs[0], record, f"arg_model_T{temp:.2f}", task_embedding
-                        )
-                        raw_results.append(result)
-                except Exception as e:
-                    print(f"  [skip arg_model T={temp}] {type(e).__name__}: {e}")
-
-        # --- ColdStart / Finetune pre-collected graphs ---
-        # Injected here so they compete with LLM-collected graphs in the same
-        # create_preference_pairs() call, enabling cross-source pairing.
+        # --- ColdStart / Finetune pre-collected graphs (loaded first) ---
+        # Processed before any new generation so their fingerprints seed seen_fps
+        # and ARGDesigner cannot produce duplicate structures.
         if extra_results:
+            sent_model = self._get_sentence_model()
             for r in extra_results:
                 nx_g = r["nx_graph"]
+                fp = _graph_fingerprint(nx_g)
+                if fp in seen_fps:
+                    continue
+                seen_fps.add(fp)
                 # Add role embeddings if absent (needed by GraphSnapshot)
-                model = self._get_sentence_model()
                 for n in nx_g.nodes():
                     if "role_embedding" not in nx_g.nodes[n]:
                         role = nx_g.nodes[n].get("role", "Unknown")
-                        nx_g.nodes[n]["role_embedding"] = model.encode(role)
+                        nx_g.nodes[n]["role_embedding"] = sent_model.encode(role)
                 raw_results.append({
                     "task_question":    record["task"],
                     "task_embedding":   task_embedding,
@@ -341,6 +321,79 @@ class RLHFDataCollector:
                     "mode":             r.get("mode", "coldstart"),
                     "domain":           self.domain,
                 })
+
+        # --- Default topology grid (fallback only) ---
+        if use_default_configs:
+            configs = _default_configs(available_roles, min_agents, max_agents)
+            graph_runs = []
+            for mode, n, roles in configs:
+                kwargs = get_kwargs(mode, n)
+                kwargs["node_kwargs"] = [{"role": r} for r in roles]
+                try:
+                    g = Graph(
+                        domain=self.domain,
+                        llm_name=self.llm_name,
+                        agent_names=[self.agent_name] * n,
+                        decision_method=self.decision_method,
+                        **kwargs,
+                    )
+                    graph_runs.append((g, mode, n))
+                except Exception as e:
+                    import traceback
+                    print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+
+            # Run sequentially — local HF models queue up under concurrency.
+            for g, m, n in graph_runs:
+                result = await self._run_graph(g, record, m, n, task_embedding)
+                raw_results.append(result)
+
+        # --- ARGDesigner model-based candidates (temperature cycling) ---
+        # When _default_configs is disabled, generate more samples to compensate.
+        # Temperatures are cycled so we get structural diversity even when
+        # n_samples > len(temperatures).  seen_fps is pre-seeded with coldstart
+        # fingerprints so no duplicate of an existing graph is ever run.
+        if self.arg_model is not None:
+            n_samples = self.arg_model_samples
+            if n_samples is None:
+                n_samples = (len(self.sample_temperatures)
+                             if use_default_configs
+                             else len(self.sample_temperatures) * 3)
+
+            emb_tensor = torch.tensor(
+                task_embedding, device=self.arg_model.args.device
+            ).float()
+
+            generated = 0
+            max_attempts = n_samples * 4   # allow retries for deduplication
+            temp_cycle = itertools.cycle(self.sample_temperatures)
+
+            for _ in range(max_attempts):
+                if generated >= n_samples:
+                    break
+                temp = next(temp_cycle)
+                try:
+                    graphs = generate_graph(
+                        self.arg_model, emb_tensor, self.role_descriptions,
+                        temperature=temp,
+                    )
+                    if not graphs:
+                        continue
+                    fp = _graph_fingerprint(graphs[0])
+                    if fp in seen_fps:
+                        continue
+                    seen_fps.add(fp)
+                    result = await self._run_nx_graph(
+                        graphs[0], record, f"arg_model_T{temp:.2f}", task_embedding
+                    )
+                    raw_results.append(result)
+                    generated += 1
+                except Exception as e:
+                    print(f"  [skip arg_model T={temp}] {type(e).__name__}: {e}")
+
+            if generated < n_samples:
+                print(f"  [warn] ARGDesigner: requested {n_samples} unique graphs, "
+                      f"got {generated} after {max_attempts} attempts")
 
         results = [r for r in raw_results if isinstance(r, dict)]
         if len(results) < 2:

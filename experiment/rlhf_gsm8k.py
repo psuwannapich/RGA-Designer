@@ -186,6 +186,7 @@ async def _collect(args):
         timeout=args.llm_timeout,
         arg_model=arg_model,
         sample_temperatures=args.sample_temperatures,
+        arg_model_samples=args.arg_model_samples,
     )
 
     coldstart_pool = None
@@ -344,6 +345,10 @@ def parse_args():
                    default=None,
                    help="Temperatures for ARGDesigner candidate sampling "
                         "(default: 1.0 1.5 2.0). Higher T → more structural diversity.")
+    p.add_argument("--arg_model_samples", type=int, default=None,
+                   help="Number of unique graphs to generate per task via ARGDesigner. "
+                        "Default: len(temperatures) when _default_configs also runs, "
+                        "len(temperatures)*3 when it is skipped.")
     p.add_argument("--coldstart_dirs", nargs="+", default=None,
                    help="Optional: one or more ColdStart/Finetune .pt directories whose "
                         "graphs are converted to preference pairs without re-running LLM "
