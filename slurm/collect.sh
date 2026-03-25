@@ -33,6 +33,8 @@
 #                             candidate generation (optional; uses default configs only if unset)
 #   SAMPLE_TEMPERATURES       space-separated temperature list for diversity sampling
 #                             (default: "1.0 1.5 2.0"; higher T → more structural variety)
+#   COLDSTART_DIRS            space-separated .pt directories to convert without LLM re-inference
+#                             e.g. "MODEL/ColdStartData/gsm8k MODEL/ColdStartData/gsm8k_ef"
 #   CHECKPOINT_ROOT           checkpoint sub-dir (default: checkpoints)
 #
 # Usage:
@@ -87,6 +89,7 @@ SEED="${SEED:-42}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"         # optional: path to trained ARGDesigner checkpoint
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"  # space-separated temperature list
+COLDSTART_DIRS="${COLDSTART_DIRS:-}"      # optional: space-separated .pt directories (no LLM re-inference)
 
 echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
@@ -120,7 +123,8 @@ uv run rlhf \
     --llm_timeout    "$LLM_TIMEOUT" \
     --seed           "$SEED" \
     --sample_temperatures $SAMPLE_TEMPERATURES \
-    ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"}
+    ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
+    ${COLDSTART_DIRS:+--coldstart_dirs $COLDSTART_DIRS}
 
 echo "========================================"
 echo "Collect complete for $DATASET"

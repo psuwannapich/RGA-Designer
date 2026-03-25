@@ -265,6 +265,7 @@ class RLHFDataCollector:
         record: Dict[str, Any],
         min_agents: int = 2,
         max_agents: int = 4,
+        extra_results: Optional[List[Dict]] = None,
     ) -> List[PreferencePair]:
         available_roles = list(self.role_descriptions.keys())
         configs = _default_configs(available_roles, min_agents, max_agents)
@@ -318,6 +319,29 @@ class RLHFDataCollector:
                 except Exception as e:
                     print(f"  [skip arg_model T={temp}] {type(e).__name__}: {e}")
 
+        # --- ColdStart / Finetune pre-collected graphs ---
+        # Injected here so they compete with LLM-collected graphs in the same
+        # create_preference_pairs() call, enabling cross-source pairing.
+        if extra_results:
+            for r in extra_results:
+                nx_g = r["nx_graph"]
+                # Add role embeddings if absent (needed by GraphSnapshot)
+                model = self._get_sentence_model()
+                for n in nx_g.nodes():
+                    if "role_embedding" not in nx_g.nodes[n]:
+                        role = nx_g.nodes[n].get("role", "Unknown")
+                        nx_g.nodes[n]["role_embedding"] = model.encode(role)
+                raw_results.append({
+                    "task_question":    record["task"],
+                    "task_embedding":   task_embedding,
+                    "graph_snapshot":   GraphSnapshot.from_nx(nx_g),
+                    "is_correct":       r["is_correct"],
+                    "num_nodes":        r["num_nodes"],
+                    "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
+                    "mode":             r.get("mode", "coldstart"),
+                    "domain":           self.domain,
+                })
+
         results = [r for r in raw_results if isinstance(r, dict)]
         if len(results) < 2:
             return []
@@ -335,10 +359,16 @@ class RLHFDataCollector:
         min_agents: int = 2,
         max_agents: int = 4,
         checkpoint_every: int = 20,
+        coldstart_pool: Optional[Dict[str, List[Dict]]] = None,
     ) -> int:
         """
         Collect preference pairs for all tasks, writing .pkl shards to
         *output_dir* every *checkpoint_every* tasks.
+
+        coldstart_pool maps task question → list of pre-loaded graph dicts
+        (from ColdStart / Finetune .pt files).  When provided, those graphs
+        are injected into the same pairing pool as the LLM-collected graphs,
+        enabling cross-source preference pairs for the same task.
 
         Returns the total number of preference pairs collected.
         """
@@ -348,7 +378,9 @@ class RLHFDataCollector:
         total_pairs = 0
 
         for i, record in enumerate(tqdm(task_records, desc="RLHF collection")):
-            pairs = await self.collect_for_task(record, min_agents, max_agents)
+            extra = (coldstart_pool or {}).get(record["task"], [])
+            pairs = await self.collect_for_task(record, min_agents, max_agents,
+                                                extra_results=extra or None)
             buffer.extend(pairs)
             total_pairs += len(pairs)
 

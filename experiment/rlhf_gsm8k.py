@@ -88,6 +88,63 @@ def _predict_fn(dataset: str):
 # Phase 1 — collect preference data
 # ---------------------------------------------------------------------------
 
+def _load_coldstart_pool(coldstart_dirs):
+    """
+    Load ColdStart / Finetune .pt files and return a pool keyed by task question.
+
+    Pool format: {question_str: [{"nx_graph": nx.DiGraph, "is_correct": bool,
+                                   "mode": str, "num_nodes": int}, ...]}
+
+    Passed to collect_dataset() so coldstart graphs are injected into the same
+    pairing pool as LLM-collected graphs, enabling cross-source preference pairs.
+    """
+    import glob
+    from collections import defaultdict
+
+    import networkx as nx
+    import torch
+
+    pool = defaultdict(list)
+    skipped = 0
+    for d in coldstart_dirs:
+        found = glob.glob(os.path.join(d, "*.pt"))
+        print(f"  {d}: {len(found)} .pt files")
+        for path in found:
+            try:
+                try:
+                    pyg = torch.load(path, weights_only=False)
+                except TypeError:
+                    pyg = torch.load(path)
+            except Exception as e:
+                print(f"  [skip] {os.path.basename(path)}: {e}")
+                skipped += 1
+                continue
+
+            question   = getattr(pyg, "question",   "")
+            is_correct = bool(getattr(pyg, "is_correct", False))
+            mode       = getattr(pyg, "mode",       "Unknown")
+            num_nodes  = int(pyg.num_nodes)
+
+            nx_g = nx.DiGraph()
+            for i in range(num_nodes):
+                node_data = pyg.x[i] if (hasattr(pyg, "x") and pyg.x is not None) else {}
+                role = node_data.get("role", "Unknown") if isinstance(node_data, dict) else "Unknown"
+                nx_g.add_node(i, role=role)
+            if hasattr(pyg, "edge_index") and pyg.edge_index.numel() > 0:
+                for src, dst in pyg.edge_index.t().tolist():
+                    nx_g.add_edge(int(src), int(dst))
+
+            key = question if question else os.path.basename(path)
+            pool[key].append({
+                "nx_graph": nx_g, "is_correct": is_correct,
+                "mode": mode, "num_nodes": num_nodes,
+            })
+
+    total = sum(len(v) for v in pool.values())
+    print(f"  ColdStart pool: {total} graphs across {len(pool)} tasks ({skipped} skipped)")
+    return dict(pool)
+
+
 async def _collect(args):
     from mas_framework.rlhf.data_collector import RLHFDataCollector
     from mas_framework.rlhf.preference_data import PreferenceWeights
@@ -131,14 +188,20 @@ async def _collect(args):
         sample_temperatures=args.sample_temperatures,
     )
 
+    coldstart_pool = None
+    if args.coldstart_dirs:
+        print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
+        coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
+
     total = await collector.collect_dataset(
         task_records=sample,
         output_dir=args.preference_dir,
         min_agents=args.min_agents,
         max_agents=args.max_agents,
         checkpoint_every=args.checkpoint_every,
+        coldstart_pool=coldstart_pool,
     )
-    print(f"Done. {total} preference pairs saved to {args.preference_dir}/")
+    print(f"\nCollect phase complete. Total preference pairs: {total}")
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +344,10 @@ def parse_args():
                    default=None,
                    help="Temperatures for ARGDesigner candidate sampling "
                         "(default: 1.0 1.5 2.0). Higher T → more structural diversity.")
+    p.add_argument("--coldstart_dirs", nargs="+", default=None,
+                   help="Optional: one or more ColdStart/Finetune .pt directories whose "
+                        "graphs are converted to preference pairs without re-running LLM "
+                        "inference (is_correct is already recorded in each .pt file).")
 
     # Reward model
     p.add_argument("--rm_checkpoint", default=None,
