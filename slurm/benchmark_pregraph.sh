@@ -30,8 +30,10 @@
 #
 # Optional env vars:
 #   HF_MODEL                  LLM for inference (default: Qwen/Qwen3-8B)
-#   CHECKPOINT_ROOT           must match the value used in Stage 1 (default: checkpoints)
-#   GRAPHS_ROOT               must match the value used in Stage 1 (default: graphs)
+#   CHECKPOINT_ROOT           must match Stage 1 value (default: checkpoints)
+#   MODEL_TYPE                must match Stage 1 value: arg_designer | rlhf
+#                             (auto-derived from CHECKPOINT_ROOT if not set)
+#   GRAPHS_ROOT               must match Stage 1 value (default: graphs)
 #   RESULTS_ROOT              output sub-dir for results (default: benchmark_results)
 #   EVAL_BATCH                async LLM inference batch size (default: 8)
 #   DISABLE_THINKING          1 = Qwen3 no-thinking mode (default: 1)
@@ -65,8 +67,13 @@ DISABLE_THINKING="${DISABLE_THINKING:-1}"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"
 USE_VLLM="${USE_VLLM:-1}"
 
-GRAPHS_FILE="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${CHECKPOINT_ROOT}/${DATASET}_graphs.jsonl"
-RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph"
+# Auto-derive MODEL_TYPE from CHECKPOINT_ROOT if not set explicitly
+if [[ -z "${MODEL_TYPE:-}" ]]; then
+    [[ "$CHECKPOINT_ROOT" == *rlhf* ]] && MODEL_TYPE="rlhf" || MODEL_TYPE="arg_designer"
+fi
+
+GRAPHS_FILE="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}/${DATASET}_graphs.jsonl"
+RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/${MODEL_TYPE}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="$RESULTS_DIR/${DATASET}_${TIMESTAMP}.jsonl"
 SUMMARY_LOG="$RESULTS_DIR/summary.jsonl"
@@ -81,6 +88,7 @@ echo "Job ID        : $SLURM_JOB_ID  (array $SLURM_ARRAY_TASK_ID)"
 echo "Node          : $SLURM_NODELIST"
 echo "Stage         : 2 — LLM inference"
 echo "Dataset       : $DATASET"
+echo "Graph model   : $MODEL_TYPE  (checkpoint root: $CHECKPOINT_ROOT)"
 echo "LLM           : $HF_MODEL"
 echo "Decision      : $DECISION"
 echo "Graphs file   : $GRAPHS_FILE"
@@ -115,6 +123,7 @@ uv run python experiment/benchmark_pregraph.py \
     --output_file       "$OUTPUT_FILE" \
     --summary_log_file  "$SUMMARY_LOG" \
     --eval_batch_size   "$EVAL_BATCH" \
+    --model_type        "$MODEL_TYPE" \
     $LIMIT_FLAG
 
 echo "========================================"

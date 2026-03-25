@@ -47,6 +47,8 @@ def parse_args():
                    default='./res_logs/evaluation_summary.jsonl')
     p.add_argument('--limit', type=int, default=None)
     p.add_argument('--eval_batch_size', type=int, default=8)
+    p.add_argument('--model_type', type=str, default=None,
+                   help="Graph generator label (read from graphs file if absent)")
     return p.parse_args()
 
 
@@ -151,7 +153,22 @@ async def main():
                     print(f"  Skipping {r.get('task_id')} — no graph (generation error).")
     if args.limit:
         graphs_data = graphs_data[:args.limit]
-    print(f"Loaded {len(graphs_data)} valid graphs for {args.dataset}.")
+
+    # Determine model_type: CLI arg > first record in file > fallback
+    if args.model_type:
+        model_type = args.model_type
+    elif graphs_data:
+        model_type = graphs_data[0].get('model_type', 'unknown')
+    else:
+        model_type = 'unknown'
+
+    print("=" * 60)
+    print(f"  Graph generator  : {model_type.upper()}")
+    print(f"  Graphs file      : {args.graphs_file}")
+    print(f"  LLM              : {args.llm_name}")
+    print(f"  Dataset          : {args.dataset}")
+    print(f"  Valid graphs     : {len(graphs_data)}")
+    print("=" * 60)
 
     role_description = get_role_description(args.dataset)
     total_tasks = len(graphs_data)
@@ -267,6 +284,7 @@ async def main():
     log_record = {
         'timestamp': datetime.datetime.now().isoformat(),
         'dataset': args.dataset,
+        'model_type': model_type,
         'llm_name': args.llm_name,
         'graphs_file': args.graphs_file,
         'total_tasks': total_tasks,

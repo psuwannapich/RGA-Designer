@@ -50,6 +50,9 @@ def parse_args():
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--no_ef', action='store_true',
                    help="Use best_model.pth instead of ef_best_model.pth")
+    p.add_argument('--model_type', type=str, default='arg_designer',
+                   choices=['arg_designer', 'rlhf'],
+                   help="Label of the graph generator model (logged in output)")
     return p.parse_args()
 
 
@@ -163,7 +166,14 @@ def main():
     setup_seed(args.seed)
 
     ef = not args.no_ef
-    print(f"Loading ARGDesigner ({'ef_best' if ef else 'best'}) from {args.model_path} ...")
+    ckpt_name = 'ef_best_model.pth' if ef else 'best_model.pth'
+    print("=" * 60)
+    print(f"  Graph generator  : {args.model_type.upper()}")
+    print(f"  Checkpoint       : {args.model_path}/{ckpt_name}")
+    print(f"  Dataset          : {args.dataset}")
+    print(f"  Output           : {args.output_file}")
+    print("=" * 60)
+    print(f"Loading ARGDesigner ({ckpt_name}) ...")
     model = load_model(args.model_path, ef=ef)
     model.eval()
 
@@ -219,6 +229,8 @@ def main():
                 'task_id': task_id,
                 'task_text': task_text,
                 'true_answer': true_answer,
+                'model_type': args.model_type,
+                'model_path': args.model_path,
                 'graph': serialize_graph(g),
                 'num_nodes': g.number_of_nodes(),
                 'num_edges': g.number_of_edges(),
@@ -229,6 +241,8 @@ def main():
                 'task_id': task_id,
                 'task_text': task_text,
                 'true_answer': true_answer,
+                'model_type': args.model_type,
+                'model_path': args.model_path,
                 'graph': None,
                 'error': str(e),
             })

@@ -27,6 +27,8 @@
 # Optional env vars:
 #   HF_MODEL          model slug used to locate the checkpoint (default: Qwen/Qwen3-8B)
 #   CHECKPOINT_ROOT   sub-dir under MODEL_SLUG where models live (default: checkpoints)
+#   MODEL_TYPE        label used in output path: arg_designer | rlhf
+#                     (auto-derived from CHECKPOINT_ROOT if not set)
 #   GRAPHS_ROOT       output sub-dir for graph files (default: graphs)
 #   LIMIT             cap number of test samples (default: all)
 #   NO_EF             set to 1 to use best_model.pth instead of ef_best_model.pth
@@ -74,8 +76,13 @@ GRAPHS_ROOT="${GRAPHS_ROOT:-graphs}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
 
+# Auto-derive MODEL_TYPE from CHECKPOINT_ROOT if not set explicitly
+if [[ -z "${MODEL_TYPE:-}" ]]; then
+    [[ "$CHECKPOINT_ROOT" == *rlhf* ]] && MODEL_TYPE="rlhf" || MODEL_TYPE="arg_designer"
+fi
+
 MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
-GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${CHECKPOINT_ROOT}"
+GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}"
 GRAPHS_FILE="$GRAPHS_DIR/${DATASET}_graphs.jsonl"
 
 mkdir -p "$GRAPHS_DIR"
@@ -88,6 +95,7 @@ echo "Job ID        : $SLURM_JOB_ID  (array $SLURM_ARRAY_TASK_ID)"
 echo "Node          : $SLURM_NODELIST"
 echo "Stage         : 1 — graph generation"
 echo "Dataset       : $DATASET"
+echo "Model type    : $MODEL_TYPE  (checkpoint root: $CHECKPOINT_ROOT)"
 echo "Model dir     : $MODEL_DIR"
 echo "Output graphs : $GRAPHS_FILE"
 echo "Limit         : ${LIMIT:-all}"
@@ -118,6 +126,7 @@ uv run python experiment/generate_graphs.py \
     --dataset       "$DATASET" \
     --dataset_path  "$DATASET_PATH" \
     --output_file   "$GRAPHS_FILE" \
+    --model_type    "$MODEL_TYPE" \
     $SPLIT_FLAG \
     $LIMIT_FLAG \
     $NO_EF_FLAG
