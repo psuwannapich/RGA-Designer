@@ -73,7 +73,6 @@ NUM_ROUNDS="${NUM_ROUNDS:-1}"
 SEED="${SEED:-42}"
 
 # ---- Select this task's dataset -------------------------------------------
-SLURM_ARRAY_TASK_ID=1
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 DATASET_JSON="${JSONLS[$SLURM_ARRAY_TASK_ID]}"
 OUTPUT_DIR="${MODEL_SLUG}/ColdStartData/${DATASET}"
