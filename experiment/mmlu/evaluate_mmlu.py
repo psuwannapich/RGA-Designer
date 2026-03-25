@@ -21,6 +21,7 @@ from mas_framework.graph.graph import TestGraph
 from experiment.utils import Accuracy, load_model, generate_graph, convert_to_pyg_graph
 from benchmark_datasets.mmlu_dataset import MMLUDataset
 from benchmark_datasets.MMLU.download import download
+from experiment.eval_checkpoint import load_checkpoint, log_batch
 
 
 def parse_args():
@@ -69,7 +70,8 @@ async def evaluate(
 
     accuracy = Accuracy()
     limit_questions = args.limit_questions
-    results_list = []
+    results_list, done_ids, solved_tasks = load_checkpoint(args.output_file, solved_key='is_correct')
+    _wall_start = time.time()
 
     def eval_loader(batch_size: int) -> Iterator[List[Any]]:
         records = []
@@ -98,6 +100,9 @@ async def evaluate(
             task_text = input_dict['task']
             true_answer = dataset.record_to_target_answer(record)
             question_id = i_batch * args.eval_batch_size + i + 1
+
+            if str(question_id) in done_ids:
+                continue
 
             task_embedding = torch.tensor(
                 sentence_model.encode(task_text),
@@ -130,6 +135,8 @@ async def evaluate(
         for meta, raw_answer in zip(metadata_list, raw_results):
             answer = dataset.postprocess_answer(raw_answer)
             is_correct = accuracy.update(answer, meta['true_answer'])
+            if is_correct:
+                solved_tasks += 1
 
             print(f"Accuracy: {accuracy.print()} | "
                   f"Cost: ${Cost.instance().value:.4f} | "
@@ -152,11 +159,14 @@ async def evaluate(
             for r in results_list:
                 f.write(json.dumps(r) + '\n')
 
-        print(f"Batch time: {time.time() - start_ts:.3f}s")
+        log_batch(i_batch, num_batches, solved_tasks, len(results_list), data_len,
+                  time.time() - start_ts, _wall_start)
 
     accuracy.print()
     print("Evaluation complete!")
-    return accuracy.get()
+    # Compute final accuracy across all results (includes any checkpoint-resumed items)
+    total_correct = sum(1 for r in results_list if r.get('is_correct'))
+    return total_correct / len(results_list) * 100 if results_list else 0.0
 
 
 async def main(ef=True):

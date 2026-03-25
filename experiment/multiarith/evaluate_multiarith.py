@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import time
 import torch
 import random
 import argparse
@@ -20,6 +21,8 @@ from mas_framework.graph.graph import TestGraph
 from experiment.utils import load_model, generate_graph, convert_to_pyg_graph
 from benchmark_datasets.gsm8k_dataset import multiarith_data_process, gsm_get_predict
 from experiment.gsm8k.gsm8k_prompt_set import ROLE_DESCRIPTION
+from experiment.eval_checkpoint import load_checkpoint, log_batch
+
 
 
 def parse_args():
@@ -90,8 +93,9 @@ async def main(ef: bool = True):
     print(f"Loaded {len(dataset)} MultiArith test samples.")
 
     total_tasks = len(dataset)
-    solved_tasks = 0
-    results_list = []
+    os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
+    results_list, done_ids, solved_tasks = load_checkpoint(args.output_file)
+    _wall_start = time.time()
 
     def eval_loader(data: List[Any], batch_size: int) -> Iterator[List[Any]]:
         buf = []
@@ -110,12 +114,16 @@ async def main(ef: bool = True):
     for i_batch, record_batch in pbar:
         answer_tasks = []
         metadata_list = []
+        _batch_start = time.time()
 
         for i_record, record in enumerate(record_batch):
             task_text = record['task']
             true_answer = record['answer']
             global_idx = i_batch * args.eval_batch_size + i_record
             task_id = f"task_{test_indices[global_idx]}"
+
+            if task_id in done_ids:
+                continue
 
             try:
                 task_embedding = torch.tensor(
@@ -174,6 +182,9 @@ async def main(ef: bool = True):
         with open(args.output_file, 'w', encoding='utf-8') as f:
             for r in results_list:
                 f.write(json.dumps(r) + '\n')
+
+        log_batch(i_batch, num_batches, solved_tasks, len(results_list), total_tasks,
+                  time.time() - _batch_start, _wall_start)
 
     pass_at_1 = solved_tasks / total_tasks * 100 if total_tasks > 0 else 0
     print(f"\n{'='*50}\nMultiArith Evaluation Summary")

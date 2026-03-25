@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import torch
 import argparse
 import asyncio
@@ -7,6 +8,7 @@ from tqdm import tqdm
 import sys
 import datetime
 from mas_framework.utils.globals import Cost, PromptTokens, CompletionTokens
+from experiment.eval_checkpoint import load_checkpoint, log_batch
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -72,8 +74,9 @@ async def main(ef=True):
     print(f"Loaded {len(dataset)} Aqua test samples for evaluation.")
 
     total_tasks = len(dataset)
-    solved_tasks = 0
-    results_list = []
+    os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
+    results_list, done_ids, solved_tasks = load_checkpoint(args.output_file)
+    _wall_start = time.time()
 
     from typing import Iterator, List, Any
     import math
@@ -95,11 +98,15 @@ async def main(ef=True):
         answer_tasks = []
         metadata_for_tasks = []
 
+        _batch_start = time.time()
         for i_record, record in enumerate(record_batch):
             task_text = record["task"]
             true_answer = record["answer"]
             global_idx = i_batch * args.eval_batch_size + i_record
             task_id = f"task_{test_indices[global_idx]}"
+
+            if task_id in done_ids:
+                continue
 
             try:
                 task_embedding = torch.tensor(sentence_model.encode(task_text),
@@ -169,7 +176,9 @@ async def main(ef=True):
             "Accuracy": f"{acc:.2f}% ({solved_tasks}/{current_processed})",
             "Token": f"${PromptTokens.instance().value:.4f}",
         })
-        
+        log_batch(i_batch, num_batches, solved_tasks, current_processed, total_tasks,
+                  time.time() - _batch_start, _wall_start)
+
         with open(args.output_file, 'w', encoding='utf-8') as f:
             for res in results_list:
                 f.write(json.dumps(res) + '\n')

@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import torch
 import argparse
 import asyncio
@@ -17,6 +18,7 @@ from mas_framework.graph.graph import TestGraph
 from experiment.utils import load_model, generate_graph, convert_to_pyg_graph
 from experiment.humaneval.finetune_humaneval import setup_environment
 from experiment.humaneval.humaneval_prompt_set import ROLE_DESCRIPTION
+from experiment.eval_checkpoint import load_checkpoint, log_batch
 
 
 def parse_args():
@@ -70,8 +72,9 @@ async def main(ef=True):
         dataset = dataset[:args.limit]
     print(f"Loaded {len(dataset)} HumanEval test set samples for evaluation.")
     total_tasks = len(dataset)
-    solved_tasks = 0
-    results_list = []
+    os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
+    results_list, done_ids, solved_tasks = load_checkpoint(args.output_file)
+    _wall_start = time.time()
     from typing import Iterator, List, Any
     import math
 
@@ -90,9 +93,13 @@ async def main(ef=True):
     for i_batch, record_batch in pbar:
         answer_tasks = []
         metadata_for_tasks = []
+        _batch_start = time.time()
         for record in record_batch:
             task_text = record["prompt"]
             task_id = record.get("task_id", f"task_{i_batch * args.eval_batch_size + len(metadata_for_tasks)}")
+
+            if task_id in done_ids:
+                continue
             task_embedding = torch.tensor(sentence_model.encode(task_text), device=model.args.device).float()
             generated_graphs = generate_graph(model, task_embedding, role_constraints_dict, task_id)
             if not generated_graphs:
@@ -138,12 +145,14 @@ async def main(ef=True):
                 "num_edges": generated_graph.number_of_edges(),
             }
             results_list.append(result_item)
-        current_processed = (i_batch * args.eval_batch_size) + len(record_batch)
-        acc = solved_tasks / current_processed * 100
+        current_processed = len(results_list)
+        acc = solved_tasks / current_processed * 100 if current_processed > 0 else 0
         pbar.set_postfix({
             "Accuracy": f"{acc:.2f}% ({solved_tasks}/{current_processed})",
             "Token": f"${PromptTokens.instance().value:.4f}",
         })
+        log_batch(i_batch, num_batches, solved_tasks, current_processed, total_tasks,
+                  time.time() - _batch_start, _wall_start)
         with open(args.output_file, 'w', encoding='utf-8') as f:
             for res in results_list:
                 f.write(json.dumps(res) + '\n')
