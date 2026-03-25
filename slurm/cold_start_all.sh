@@ -39,7 +39,8 @@
 set -euo pipefail
 
 # Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
-source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
+_SLURM_DIR="${SLURM_SUBMIT_DIR:+${SLURM_SUBMIT_DIR}/slurm}"
+source "${_SLURM_DIR:-$(dirname "${BASH_SOURCE[0]}")}/setup_cuda.sh"
 
 # ---- Dataset registry (indices must match --array range above) ------------
 DATASETS=(

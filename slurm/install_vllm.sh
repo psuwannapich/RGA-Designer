@@ -28,7 +28,8 @@ echo "Started  : $(date)"
 echo "========================================"
 
 # Load CUDA modules so libcudnn.so is on LD_LIBRARY_PATH before torch imports.
-source "$(dirname "${BASH_SOURCE[0]}")/setup_cuda.sh"
+_SLURM_DIR="${SLURM_SUBMIT_DIR:+${SLURM_SUBMIT_DIR}/slurm}"
+source "${_SLURM_DIR:-$(dirname "${BASH_SOURCE[0]}")}/setup_cuda.sh"
 
 echo "CUDA_HOME : ${CUDA_HOME:-<not found>}"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
