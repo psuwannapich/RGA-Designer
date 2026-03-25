@@ -173,7 +173,8 @@ async def main():
     role_description = get_role_description(args.dataset)
     total_tasks = len(graphs_data)
     os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
-    results_list, done_ids, solved_tasks = load_checkpoint(args.output_file)
+    _, done_ids, solved_tasks = load_checkpoint(args.output_file)
+    total_done = len(done_ids)
     _wall_start = time.time()
 
     def batch_iter(data: List[Any], size: int) -> Iterator[List[Any]]:
@@ -186,88 +187,104 @@ async def main():
         if buf:
             yield buf
 
+    def _append_result(out_fh, rec: dict) -> None:
+        """Write one result line immediately and flush to disk."""
+        out_fh.write(json.dumps(rec) + '\n')
+        out_fh.flush()
+        os.fsync(out_fh.fileno())
+
     num_batches = math.ceil(total_tasks / args.eval_batch_size)
     pbar = tqdm(enumerate(batch_iter(graphs_data, args.eval_batch_size)),
                 total=num_batches, desc=f"Benchmarking [{args.dataset}]")
 
-    for i_batch, batch in pbar:
-        answer_tasks = []
-        metadata = []
-        _batch_start = time.time()
+    # Open in append mode — results written per-sample survive mid-batch crashes.
+    with open(args.output_file, 'a', encoding='utf-8') as out_fh:
+        for i_batch, batch in pbar:
+            answer_tasks = []
+            metadata = []
+            prep_errors = []
+            _batch_start = time.time()
 
-        for rec in batch:
-            task_id = rec['task_id']
-            if task_id in done_ids:
+            for rec in batch:
+                task_id = rec['task_id']
+                if task_id in done_ids:
+                    continue
+
+                task_text = rec['task_text']
+                true_answer = rec['true_answer']
+
+                try:
+                    g = deserialize_graph(rec['graph'])
+                    apply_role_constraints(g, role_description)
+                    pyg_data = convert_to_pyg_graph(g, task_text)
+                    tg = TestGraph(domain=args.dataset, llm_name=args.llm_name,
+                                   decision_method=args.decision_method, pyg_data=pyg_data)
+                    answer_tasks.append(tg.arun({'task': task_text}, num_rounds=1))
+                    metadata.append({
+                        'task_id': task_id,
+                        'task_text': task_text,
+                        'true_answer': true_answer,
+                        'num_nodes': rec.get('num_nodes', g.number_of_nodes()),
+                        'num_edges': rec.get('num_edges', g.number_of_edges()),
+                    })
+                except Exception as e:
+                    print(f"Error preparing {task_id}: {e}")
+                    err_rec = {
+                        'task_id': task_id, 'question': task_text,
+                        'true_answer': true_answer, 'predicted_answer': None,
+                        'is_solved': False, 'error': str(e),
+                    }
+                    _append_result(out_fh, err_rec)
+                    done_ids.add(str(task_id))
+                    total_done += 1
+                    prep_errors.append(err_rec)
+
+            if not answer_tasks:
                 continue
 
-            task_text = rec['task_text']
-            true_answer = rec['true_answer']
+            all_results = await asyncio.gather(*answer_tasks, return_exceptions=True)
 
-            try:
-                g = deserialize_graph(rec['graph'])
-                apply_role_constraints(g, role_description)
-                pyg_data = convert_to_pyg_graph(g, task_text)
-                tg = TestGraph(domain=args.dataset, llm_name=args.llm_name,
-                               decision_method=args.decision_method, pyg_data=pyg_data)
-                answer_tasks.append(tg.arun({'task': task_text}, num_rounds=1))
-                metadata.append({
-                    'task_id': task_id,
-                    'task_text': task_text,
-                    'true_answer': true_answer,
-                    'num_nodes': rec.get('num_nodes', g.number_of_nodes()),
-                    'num_edges': rec.get('num_edges', g.number_of_edges()),
-                })
-            except Exception as e:
-                print(f"Error preparing {task_id}: {e}")
-                results_list.append({
-                    'task_id': task_id, 'question': task_text,
-                    'true_answer': true_answer, 'predicted_answer': None,
-                    'is_solved': False, 'error': str(e),
-                })
+            for i, result in enumerate(all_results):
+                meta = metadata[i]
+                if isinstance(result, Exception):
+                    print(f"Error executing {meta['task_id']}: {result}")
+                    err_rec = {
+                        'task_id': meta['task_id'], 'question': meta['task_text'],
+                        'true_answer': meta['true_answer'], 'predicted_answer': None,
+                        'is_solved': False, 'error': str(result),
+                    }
+                    _append_result(out_fh, err_rec)
+                    done_ids.add(str(meta['task_id']))
+                    total_done += 1
+                    continue
 
-        if not answer_tasks:
-            continue
+                raw = result[0] if isinstance(result, list) and result else result
+                predicted, is_solved = evaluate_prediction(args.dataset, raw, meta['true_answer'])
+                if is_solved:
+                    solved_tasks += 1
+                res_rec = {
+                    'task_id': meta['task_id'],
+                    'question': meta['task_text'],
+                    'true_answer': meta['true_answer'],
+                    'predicted_answer': predicted,
+                    'raw_response': str(raw),
+                    'is_solved': is_solved,
+                    'num_nodes': meta['num_nodes'],
+                    'num_edges': meta['num_edges'],
+                }
+                _append_result(out_fh, res_rec)
+                done_ids.add(str(meta['task_id']))
+                total_done += 1
 
-        all_results = await asyncio.gather(*answer_tasks, return_exceptions=True)
-
-        for i, result in enumerate(all_results):
-            meta = metadata[i]
-            if isinstance(result, Exception):
-                print(f"Error executing {meta['task_id']}: {result}")
-                results_list.append({
-                    'task_id': meta['task_id'], 'question': meta['task_text'],
-                    'true_answer': meta['true_answer'], 'predicted_answer': None,
-                    'is_solved': False, 'error': str(result),
-                })
-                continue
-
-            raw = result[0] if isinstance(result, list) and result else result
-            predicted, is_solved = evaluate_prediction(args.dataset, raw, meta['true_answer'])
-            if is_solved:
-                solved_tasks += 1
-            results_list.append({
-                'task_id': meta['task_id'],
-                'question': meta['task_text'],
-                'true_answer': meta['true_answer'],
-                'predicted_answer': predicted,
-                'raw_response': str(raw),
-                'is_solved': is_solved,
-                'num_nodes': meta['num_nodes'],
-                'num_edges': meta['num_edges'],
+            acc = solved_tasks / total_done * 100 if total_done else 0
+            pbar.set_postfix({
+                'Accuracy': f'{acc:.2f}% ({solved_tasks}/{total_done})',
+                'Tokens': f'${PromptTokens.instance().value:.4f}',
             })
+            log_batch(i_batch, num_batches, solved_tasks, total_done, total_tasks,
+                      time.time() - _batch_start, _wall_start)
 
-        acc = solved_tasks / len(results_list) * 100 if results_list else 0
-        pbar.set_postfix({
-            'Accuracy': f'{acc:.2f}% ({solved_tasks}/{len(results_list)})',
-            'Tokens': f'${PromptTokens.instance().value:.4f}',
-        })
-        with open(args.output_file, 'w', encoding='utf-8') as f:
-            for r in results_list:
-                f.write(json.dumps(r) + '\n')
-        log_batch(i_batch, num_batches, solved_tasks, len(results_list), total_tasks,
-                  time.time() - _batch_start, _wall_start)
-
-    pass_at_1 = solved_tasks / total_tasks * 100 if total_tasks > 0 else 0
+    pass_at_1 = solved_tasks / total_done * 100 if total_done > 0 else 0
     final_cost = Cost.instance().value
     final_prompt = PromptTokens.instance().value
     final_completion = CompletionTokens.instance().value
@@ -275,7 +292,7 @@ async def main():
     print(f"\n{'='*50}\nBenchmark Summary [{args.dataset}]")
     print(f"LLM        : {args.llm_name}")
     print(f"Graphs file: {args.graphs_file}")
-    print(f"Total: {total_tasks}  Solved: {solved_tasks}  Pass@1: {pass_at_1:.2f}%")
+    print(f"Total: {total_done}  Solved: {solved_tasks}  Pass@1: {pass_at_1:.2f}%")
     print(f"Cost: ${final_cost:.6f}  "
           f"Prompt tokens: {int(final_prompt)}  "
           f"Completion tokens: {int(final_completion)}")
@@ -287,7 +304,7 @@ async def main():
         'model_type': model_type,
         'llm_name': args.llm_name,
         'graphs_file': args.graphs_file,
-        'total_tasks': total_tasks,
+        'total_tasks': total_done,
         'solved_tasks': solved_tasks,
         'pass_at_1': pass_at_1,
         'cost': final_cost,
