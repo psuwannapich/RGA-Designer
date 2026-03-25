@@ -153,13 +153,21 @@ async def main():
     base_task_indices = finetune_candidates[:base_task_count]
     finetune_task_indices = finetune_candidates[base_task_count:]
 
-    with open(TASK_SPLIT_FILE, 'w') as f:
-        json.dump({
-            "base_tasks_indices": base_task_indices,
-            "finetune_tasks_indices": finetune_task_indices,
-            "test_indices": test_indices
-        }, f, indent=2)
-    print(f"Saved task split: {TASK_SPLIT_FILE} ({len(base_task_indices)} for cold start)")
+    if os.path.exists(TASK_SPLIT_FILE):
+        print(f"Task split already exists, loading from: {TASK_SPLIT_FILE}")
+        with open(TASK_SPLIT_FILE, 'r') as f:
+            existing = json.load(f)
+        base_task_indices     = existing.get("base_tasks_indices", base_task_indices)
+        finetune_task_indices = existing.get("finetune_tasks_indices", finetune_task_indices)
+        test_indices          = existing.get("test_indices", test_indices)
+    else:
+        with open(TASK_SPLIT_FILE, 'w') as f:
+            json.dump({
+                "base_tasks_indices": base_task_indices,
+                "finetune_tasks_indices": finetune_task_indices,
+                "test_indices": test_indices
+            }, f, indent=2)
+        print(f"Saved task split: {TASK_SPLIT_FILE} ({len(base_task_indices)} for cold start)")
 
     cold_start_dataset = [dataset[i] for i in base_task_indices]
     os.makedirs(OUTPUT_DIR, exist_ok=True)

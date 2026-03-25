@@ -81,14 +81,20 @@ async def main():
     base_task_indices = finetune_candidates[:base_task_count]
     finetune_task_indices = finetune_candidates[base_task_count:]
 
-    # Save task split
-    with open(TASK_SPLIT_FILE, 'w') as f:
-        json.dump({
-            "base_tasks": base_task_indices,
-            "finetune_tasks": finetune_task_indices
-        }, f)
-
-    print(f"Selected {len(base_task_indices)} base tasks and saved split to {TASK_SPLIT_FILE}")
+    # Save task split (never overwrite an existing split)
+    if os.path.exists(TASK_SPLIT_FILE):
+        print(f"Task split already exists, loading from: {TASK_SPLIT_FILE}")
+        with open(TASK_SPLIT_FILE, 'r') as f:
+            existing = json.load(f)
+        base_task_indices     = existing.get("base_tasks", base_task_indices)
+        finetune_task_indices = existing.get("finetune_tasks", finetune_task_indices)
+    else:
+        with open(TASK_SPLIT_FILE, 'w') as f:
+            json.dump({
+                "base_tasks": base_task_indices,
+                "finetune_tasks": finetune_task_indices
+            }, f)
+        print(f"Selected {len(base_task_indices)} base tasks and saved split to {TASK_SPLIT_FILE}")
 
     # Create cold-start subset
     cold_start_dataset = torch.utils.data.Subset(dataset, base_task_indices)

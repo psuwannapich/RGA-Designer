@@ -9,10 +9,14 @@ from experiment.humaneval.humaneval_prompt_set import ROLE_DESCRIPTION
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+_SENTENCE_MODEL = None
+
+
 def get_sentence_embedding(sentence):
-    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-    embeddings = model.encode(sentence)
-    return embeddings
+    global _SENTENCE_MODEL
+    if _SENTENCE_MODEL is None:
+        _SENTENCE_MODEL = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    return _SENTENCE_MODEL.encode(sentence)
 
 
 def precompute_role_embeddings(save_path):

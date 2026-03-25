@@ -323,17 +323,27 @@ def _save_task_split(dataset: str, base_task_indices: list,
     split_dir = os.path.join(project_root, subdir)
     os.makedirs(split_dir, exist_ok=True)
     split_path = os.path.join(split_dir, f'task_split_{dataset}.json')
-    with open(split_path, 'w', encoding='utf-8') as f:
-        json.dump({
-            'base_tasks_indices':     base_task_indices,
-            'finetune_tasks_indices': finetune_task_indices,
-            'test_indices':           test_indices,
-        }, f)
-    print(f"Task split saved to: {split_path}")
+
+    if os.path.exists(split_path):
+        print(f"Task split already exists, loading from: {split_path}")
+        with open(split_path, 'r', encoding='utf-8') as f:
+            existing = json.load(f)
+        base_task_indices     = existing.get('base_tasks_indices', base_task_indices)
+        finetune_task_indices = existing.get('finetune_tasks_indices', finetune_task_indices)
+        test_indices          = existing.get('test_indices', test_indices)
+    else:
+        with open(split_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'base_tasks_indices':     base_task_indices,
+                'finetune_tasks_indices': finetune_task_indices,
+                'test_indices':           test_indices,
+            }, f)
+        print(f"Task split saved to: {split_path}")
+
     print(f"  base (cold-start): {len(base_task_indices)}")
     print(f"  finetune         : {len(finetune_task_indices)}")
     print(f"  test             : {len(test_indices)}")
-    return split_path
+    return split_path, base_task_indices, finetune_task_indices, test_indices
 
 
 async def main():
@@ -363,8 +373,8 @@ async def main():
     base_task_indices   = finetune_candidates[:base_task_count]
     finetune_task_indices = finetune_candidates[base_task_count:]
 
-    _save_task_split(args.dataset, base_task_indices,
-                     finetune_task_indices, test_indices, project_root)
+    _, base_task_indices, finetune_task_indices, test_indices = _save_task_split(
+        args.dataset, base_task_indices, finetune_task_indices, test_indices, project_root)
 
     # Cold-start generation uses only base_task_indices (not full dataset)
     # num_tasks == 0 means "use all base tasks"
