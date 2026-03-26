@@ -109,16 +109,12 @@ def _vanilla_prompt(task: str) -> list:
 async def _run_vanilla(
     llm_name: str,
     task: str,
-    timeout: int = 600,
 ) -> Optional[str]:
     """Call the LLM directly with a minimal prompt; return raw output or None."""
     from mas_framework.llm.llm_registry import LLMRegistry
     llm = LLMRegistry.get(llm_name)
     try:
-        result = await asyncio.wait_for(
-            llm.agen(_vanilla_prompt(task)),
-            timeout=timeout,
-        )
+        result = await llm.agen(_vanilla_prompt(task))
     except Exception as e:
         import traceback
         print(f"  [vanilla error] {type(e).__name__}: {e}")
@@ -174,7 +170,6 @@ async def _run_once(
     domain: str,
     llm_name: str,
     decision_method: str,
-    timeout: int = 600,
 ) -> Optional[str]:
     """Run one graph on one task; return raw string output or None on error."""
     realized = copy.deepcopy(graph)
@@ -187,7 +182,7 @@ async def _run_once(
         pyg_data=flow_graph,
     )
     try:
-        result = await asyncio.wait_for(tg.arun(input_dict, 1), timeout=timeout)
+        result = await tg.arun(input_dict, 1)
     except Exception as e:
         import traceback
         print(f"  [error] {type(e).__name__}: {e}")
@@ -211,12 +206,11 @@ async def _run_self_consistency(
     llm_name: str,
     decision_method: str,
     n_samples: int = _SC_SAMPLES,
-    timeout: int = 600,
 ) -> Optional[str]:
     """Run N independent CoT passes and return the majority-vote answer."""
     raw_outputs = []
     for _ in range(n_samples):
-        raw = await _run_once(graph, task, domain, llm_name, decision_method, timeout)
+        raw = await _run_once(graph, task, domain, llm_name, decision_method)
         if raw is not None:
             raw_outputs.append(raw)
 
@@ -314,18 +308,17 @@ async def evaluate(args) -> None:
                 truth = record["answer"]
 
                 if args.method == "vanilla":
-                    raw = await _run_vanilla(args.llm_name, task, timeout=args.timeout)
+                    raw = await _run_vanilla(args.llm_name, task)
                     predicted = _get_predict(args.dataset, raw or "")
                 elif args.method == "self_consistency":
                     predicted = await _run_self_consistency(
                         graph, task, args.dataset, args.llm_name, decision_method,
-                        n_samples=args.sc_samples, timeout=args.timeout,
+                        n_samples=args.sc_samples,
                     )
                     raw = predicted or ""
                 else:
                     raw = await _run_once(
                         graph, task, args.dataset, args.llm_name, decision_method,
-                        timeout=args.timeout,
                     )
                     predicted = _get_predict(args.dataset, raw or "")
 
@@ -411,8 +404,6 @@ def parse_args():
                         "methods reduce if you hit OOM (default: 4)")
     p.add_argument("--limit", type=int, default=None,
                    help="Cap number of test samples (default: all)")
-    p.add_argument("--timeout", type=int, default=600,
-                   help="Seconds to wait for one LLM graph run (default: 600)")
     p.add_argument("--output_file", default=None,
                    help="JSONL file to write per-task results")
     p.add_argument("--summary_log_file", default=None,
