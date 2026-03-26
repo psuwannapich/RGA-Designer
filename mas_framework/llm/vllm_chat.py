@@ -177,6 +177,12 @@ class VLLMChat(LLM):
 
         if final_output is None or not final_output.outputs:
             return ""
+
+        # Accumulate token usage into global singletons
+        from mas_framework.utils.globals import PromptTokens, CompletionTokens
+        PromptTokens.instance().value += len(final_output.prompt_token_ids)
+        CompletionTokens.instance().value += len(final_output.outputs[0].token_ids)
+
         from mas_framework.llm.hf_chat import _strip_thinking
         return _strip_thinking(final_output.outputs[0].text)
 

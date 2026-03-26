@@ -129,6 +129,14 @@ class _Batcher:
                 _strip_thinking(tokenizer.decode(out[input_len:], skip_special_tokens=True))
                 for out in outputs
             ]
+
+            # Accumulate token usage into global singletons (thread-safe: GIL protects +=)
+            from mas_framework.utils.globals import PromptTokens, CompletionTokens
+            PromptTokens.instance().value += input_len * len(batch)
+            CompletionTokens.instance().value += sum(
+                int(out.shape[0]) - input_len for out in outputs
+            )
+
             for i, (_, _, _, loop, fut) in enumerate(batch):
                 if not fut.done():
                     loop.call_soon_threadsafe(fut.set_result, results[i])

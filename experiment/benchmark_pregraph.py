@@ -242,7 +242,18 @@ async def main():
             if not answer_tasks:
                 continue
 
+            # Snapshot token counters before running this batch.
+            _pt_before = PromptTokens.instance().value
+            _ct_before = CompletionTokens.instance().value
+
             all_results = await asyncio.gather(*answer_tasks, return_exceptions=True)
+
+            # Distribute batch token usage evenly across tasks in this batch.
+            n_tasks = len(answer_tasks)
+            _pt_batch = PromptTokens.instance().value - _pt_before
+            _ct_batch = CompletionTokens.instance().value - _ct_before
+            _pt_per = int(_pt_batch / n_tasks) if n_tasks else 0
+            _ct_per = int(_ct_batch / n_tasks) if n_tasks else 0
 
             for i, result in enumerate(all_results):
                 meta = metadata[i]
@@ -252,6 +263,7 @@ async def main():
                         'task_id': meta['task_id'], 'question': meta['task_text'],
                         'true_answer': meta['true_answer'], 'predicted_answer': None,
                         'is_solved': False, 'error': str(result),
+                        'prompt_tokens': _pt_per, 'completion_tokens': _ct_per,
                     }
                     _append_result(out_fh, err_rec)
                     done_ids.add(str(meta['task_id']))
@@ -271,6 +283,8 @@ async def main():
                     'is_solved': is_solved,
                     'num_nodes': meta['num_nodes'],
                     'num_edges': meta['num_edges'],
+                    'prompt_tokens': _pt_per,
+                    'completion_tokens': _ct_per,
                 }
                 _append_result(out_fh, res_rec)
                 done_ids.add(str(meta['task_id']))
@@ -293,9 +307,9 @@ async def main():
     print(f"LLM        : {args.llm_name}")
     print(f"Graphs file: {args.graphs_file}")
     print(f"Total: {total_done}  Solved: {solved_tasks}  Pass@1: {pass_at_1:.2f}%")
-    print(f"Cost: ${final_cost:.6f}  "
-          f"Prompt tokens: {int(final_prompt)}  "
-          f"Completion tokens: {int(final_completion)}")
+    print(f"Prompt tokens: {int(final_prompt)}  "
+          f"Completion tokens: {int(final_completion)}  "
+          f"Total tokens: {int(final_prompt + final_completion)}")
     print(f"Results saved to: {args.output_file}")
 
     log_record = {

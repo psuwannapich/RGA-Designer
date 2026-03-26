@@ -57,6 +57,7 @@ from experiment.cold_start_gemma import (
     _get_agent_name,
 )
 from experiment.utils import get_kwargs
+from mas_framework.utils.globals import PromptTokens, CompletionTokens
 
 # ---------------------------------------------------------------------------
 # Method → topology mapping
@@ -307,6 +308,9 @@ async def evaluate(args) -> None:
                 task  = record["task"]
                 truth = record["answer"]
 
+                pt_before = PromptTokens.instance().value
+                ct_before = CompletionTokens.instance().value
+
                 if args.method == "vanilla":
                     raw = await _run_vanilla(args.llm_name, task)
                     predicted = _get_predict(args.dataset, raw or "")
@@ -330,6 +334,8 @@ async def evaluate(args) -> None:
                     "predicted_answer": predicted,
                     "raw_response": raw,
                     "is_solved": correct,
+                    "prompt_tokens": int(PromptTokens.instance().value - pt_before),
+                    "completion_tokens": int(CompletionTokens.instance().value - ct_before),
                 }
 
             batch_coros = [_process(rec, base_idx + i) for i, rec in pending]
@@ -355,7 +361,12 @@ async def evaluate(args) -> None:
         out_f.close()
 
     accuracy = solved / total * 100 if total else 0
+    total_prompt = int(PromptTokens.instance().value)
+    total_completion = int(CompletionTokens.instance().value)
     print(f"\nAccuracy: {accuracy:.2f}%  ({solved}/{total})")
+    print(f"Prompt tokens: {total_prompt}  "
+          f"Completion tokens: {total_completion}  "
+          f"Total tokens: {total_prompt + total_completion}")
     print(f"Results saved to: {args.output_file}")
 
     # Append to summary log
@@ -368,6 +379,8 @@ async def evaluate(args) -> None:
         "total_tasks": total,
         "solved_tasks": solved,
         "accuracy": accuracy,
+        "prompt_tokens": total_prompt,
+        "completion_tokens": total_completion,
         "detail_file": args.output_file,
     }
     if args.summary_log_file:
