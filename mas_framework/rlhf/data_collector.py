@@ -170,9 +170,7 @@ class RLHFDataCollector:
         )
 
         try:
-            result = await asyncio.wait_for(
-                tg.arun(input_dict, self.num_rounds), timeout=self.timeout
-            )
+            result = await tg.arun(input_dict, self.num_rounds)
         except Exception as e:
             import traceback
             print(f"  [skip] {mode}-{agent_num}: {type(e).__name__}: {e}")

@@ -375,8 +375,7 @@ class Graph(ABC):
 
     async def arun(self, input: Dict[str, str],
                    num_rounds: int = 3,
-                   max_tries: int = 3,
-                   max_time: int = 600, ) -> List[Any]:
+                   max_tries: int = 3) -> List[Any]:
         log_probs = 0
         new_features = self.construct_new_features(input['task'])
         logits = self.gcn(new_features, self.role_adj_matrix)
@@ -395,8 +394,7 @@ class Graph(ABC):
                 tries = 0
                 while tries < max_tries:
                     try:
-                        await asyncio.wait_for(self.nodes[current_node_id].async_execute(input),
-                                               timeout=max_time)
+                        await self.nodes[current_node_id].async_execute(input)
                         break
                     except Exception as e:
                         print(f"Error during execution of node {current_node_id}: {e}")
@@ -515,7 +513,7 @@ class TestGraph(ABC):
         self.nodes[node_id] = node
         return node
 
-    async def arun(self, inputs: Dict[str, Any], num_rounds=1, max_tries: int = 3, max_time: int = 600) -> List[Any]:
+    async def arun(self, inputs: Dict[str, Any], num_rounds=1, max_tries: int = 3) -> List[Any]:
 
         for round in range(num_rounds):
 
@@ -528,8 +526,7 @@ class TestGraph(ABC):
                 tries = 0
                 while tries < max_tries:
                     try:
-                        await asyncio.wait_for(self.nodes[current_node_id].async_execute(inputs),
-                                               timeout=max_time)
+                        await self.nodes[current_node_id].async_execute(inputs)
                         break
                     except Exception as e:
                         print(f"Error during execution of node {current_node_id}: {e}")
