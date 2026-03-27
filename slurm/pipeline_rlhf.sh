@@ -8,7 +8,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
-#SBATCH --time=4-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 
@@ -68,7 +68,7 @@ DATASET_JSON="$PROJECT_ROOT/${DATASET_JSONS[$SLURM_ARRAY_TASK_ID]}"
 MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 
 # ---- Configuration ----------------------------------------------------------
-HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
 MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
@@ -85,7 +85,7 @@ W_SIZE="${W_SIZE:-0.2}"
 W_TOKEN="${W_TOKEN:-0.2}"
 PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
-LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
+LLM_TIMEOUT="${LLM_TIMEOUT:-1200}"
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"
 ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"
 COLDSTART_DIRS="${COLDSTART_DIRS:-}"
@@ -233,12 +233,12 @@ fi
 # ---- Shared setup for stages 4a/4b ------------------------------------------
 # Task-split paths (standard ordering: 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu)
 TASK_SPLIT_PATHS=(
-    "experiment/gsm8k/task_split_gsm8k.json"
-    "experiment/aqua/task_split_aqua.json"
-    "experiment/multiarith/task_split_humaneval.json"
-    "experiment/svamp/task_split_humaneval.json"
-    "experiment/humaneval/task_split_humaneval.json"
-    "experiment/mmlu/task_split_humaneval.json"
+    "benchmark_datasets/gsm8k/task_split_gsm8k.json"
+    "benchmark_datasets/AQuA/task_split_aqua.json"
+    "benchmark_datasets/MultiArith/task_split_multiarith.json"
+    "benchmark_datasets/SVAMP/task_split_svamp.json"
+    "benchmark_datasets/humaneval/task_split_humaneval.json"
+    "benchmark_datasets/MMLU/task_split_mmlu.json"
 )
 TASK_SPLIT_RAW="${TASK_SPLIT_PATHS[$SLURM_ARRAY_TASK_ID]}"
 
@@ -292,7 +292,7 @@ else
 
     RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    OUTPUT_FILE="$RESULTS_DIR/${DATASET}_${TIMESTAMP}.jsonl"
+    OUTPUT_FILE="$RESULTS_DIR/${DATASET}.jsonl"
     SUMMARY_LOG="$RESULTS_DIR/summary.jsonl"
     mkdir -p "$RESULTS_DIR"
 

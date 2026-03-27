@@ -5,10 +5,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --array=0-47        # 8 methods × 6 datasets = 48 tasks
 #SBATCH -p gpu
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 
@@ -41,7 +41,6 @@
 #   NUM_AGENTS      agents per graph      (default: per-method default)
 #   SC_SAMPLES      SC sample count       (default: 5)
 #   LIMIT           cap test samples      (default: all)
-#   LLM_TIMEOUT     seconds per LLM call  (default: 600)
 #   RESULTS_ROOT    output root dir       (default: benchmark_results)
 #
 # Usage:
@@ -65,6 +64,14 @@ DATASET_JSONS=(
     "benchmark_datasets/humaneval/humaneval-py.jsonl"
     "benchmark_datasets/MMLU/data"
 )
+TASK_SPLIT_PATHS=(
+    "benchmark_datasets/gsm8k/task_split_gsm8k.json"
+    "benchmark_datasets/AQuA/task_split_aqua.json"
+    "benchmark_datasets/MultiArith/task_split_multiarith.json"
+    "benchmark_datasets/SVAMP/task_split_svamp.json"
+    "benchmark_datasets/humaneval/task_split_humaneval.json"
+    "benchmark_datasets/MMLU/task_split_mmlu.json"
+)
 
 NUM_METHODS=${#METHODS[@]}
 NUM_DATASETS=${#DATASETS[@]}
@@ -83,7 +90,7 @@ mkdir -p "$PROJECT_ROOT/logs"
 PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 # ---- Configurable knobs -----------------------------------------------------
-HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
 USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
@@ -93,7 +100,6 @@ export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE DISABLE_THINKING PYTHONPATH
 NUM_AGENTS="${NUM_AGENTS:-}"          # empty = use per-method default
 SC_SAMPLES="${SC_SAMPLES:-5}"
 LIMIT="${LIMIT:-}"                    # empty = evaluate all
-LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 # vanilla/cot: 8 concurrent tasks → HF batcher generates batch=8 → high GPU util
 # multi-agent methods: lower value to avoid OOM from many concurrent LLM calls
@@ -106,10 +112,11 @@ esac
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/${METHOD}"
 mkdir -p "$OUTPUT_DIR"
-OUTPUT_FILE="$OUTPUT_DIR/${DATASET}_${TIMESTAMP}.jsonl"
+OUTPUT_FILE="$OUTPUT_DIR/${DATASET}.jsonl"
 SUMMARY_LOG="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/summary.jsonl"
 
 DATASET_JSON="$PROJECT_ROOT/${DATASET_JSONS[$DATASET_IDX]}"
+TASK_SPLIT="$PROJECT_ROOT/${TASK_SPLIT_PATHS[$DATASET_IDX]}"
 
 echo "========================================"
 echo "Job ID        : $SLURM_JOB_ID  (array task $SLURM_ARRAY_TASK_ID)"
@@ -131,6 +138,9 @@ AGENTS_FLAG=""
 LIMIT_FLAG=""
 [[ -n "$LIMIT" ]] && LIMIT_FLAG="--limit $LIMIT"
 
+SPLIT_FLAG=""
+[[ -f "$TASK_SPLIT" ]] && SPLIT_FLAG="--task_split_path $TASK_SPLIT"
+
 # ---- Run evaluation ---------------------------------------------------------
 uv run baseline \
     --dataset         "$DATASET" \
@@ -139,11 +149,11 @@ uv run baseline \
     --llm_name        "$HF_MODEL" \
     --sc_samples      "$SC_SAMPLES" \
     --eval_batch_size "$EVAL_BATCH" \
-    --timeout         "$LLM_TIMEOUT" \
     --output_file     "$OUTPUT_FILE" \
     --summary_log_file "$SUMMARY_LOG" \
     $AGENTS_FLAG \
-    $LIMIT_FLAG
+    $LIMIT_FLAG \
+    $SPLIT_FLAG
 
 echo "========================================"
 echo "Baseline benchmark complete: $METHOD / $DATASET"

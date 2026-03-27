@@ -50,6 +50,7 @@ from tqdm import tqdm
 from mas_framework.graph.graph import Graph, TestGraph
 from experiment.cold_start_gemma import (
     _load_dataset,
+    _load_task_split,
     _get_predict,
     _is_correct,
     _get_role_description,
@@ -229,11 +230,25 @@ async def _run_self_consistency(
 # ---------------------------------------------------------------------------
 
 async def evaluate(args) -> None:
-    dataset_records = _load_dataset(args.dataset, args.dataset_json)
+    all_records = _load_dataset(args.dataset, args.dataset_json)
     if args.seed is not None:
         random.seed(args.seed)
 
-    # Determine test split (all records unless --limit)
+    # Filter to test split to avoid data leakage
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    try:
+        if args.task_split_path:
+            with open(args.task_split_path, 'r', encoding='utf-8') as f:
+                task_split = json.load(f)
+        else:
+            task_split = _load_task_split(args.dataset, project_root)
+        test_indices = task_split.get('test_indices', list(range(len(all_records))))
+        dataset_records = [all_records[i] for i in test_indices]
+        print(f"Using test split: {len(dataset_records)}/{len(all_records)} records")
+    except FileNotFoundError as e:
+        print(f"Warning: {e}\nFalling back to full dataset — run cold-start to create a split.")
+        dataset_records = all_records
+
     if args.limit:
         dataset_records = dataset_records[: args.limit]
     total = len(dataset_records)
@@ -421,6 +436,8 @@ def parse_args():
                    help="JSONL file to write per-task results")
     p.add_argument("--summary_log_file", default=None,
                    help="JSONL file to append summary metrics")
+    p.add_argument("--task_split_path", default=None,
+                   help="Path to task split JSON; if absent, auto-derived from dataset name")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 

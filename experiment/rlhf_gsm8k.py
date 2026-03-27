@@ -50,6 +50,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from experiment.cold_start_gemma import (
     _load_dataset,
+    _load_task_split,
     _get_predict,
     _is_correct,
     _get_role_description,
@@ -150,9 +151,19 @@ async def _collect(args):
     from mas_framework.rlhf.preference_data import PreferenceWeights
     import random
 
-    dataset = _load_dataset(args.dataset, args.dataset_json)
+    all_records = _load_dataset(args.dataset, args.dataset_json)
+
+    # Use only base + finetune splits — never touch test data
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    task_split = _load_task_split(args.dataset, project_root)
+    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    dataset = [all_records[i] for i in train_indices]
+    print(f"Using base+finetune split: {len(dataset)}/{len(all_records)} records (test excluded)")
+
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
+    # Number of sample generated from ARG-Designer model for each temp.
+    num_sample_for_tasks = int(args.num_tasks / len(sample))
     print(f"Collecting RLHF data for {len(sample)} tasks ({args.dataset}) with {args.llm_name} ...")
 
     role_desc = _get_role_description(args.dataset)
@@ -201,6 +212,7 @@ async def _collect(args):
         max_agents=args.max_agents,
         checkpoint_every=args.checkpoint_every,
         coldstart_pool=coldstart_pool,
+        num_sample_for_tasks=num_sample_for_tasks
     )
     print(f"\nCollect phase complete. Total preference pairs: {total}")
 
@@ -255,7 +267,15 @@ def _train_policy(args):
     print(f"Loading reward model from {args.rm_checkpoint} ...")
     reward_model = load_reward_model(args.rm_checkpoint, device)
 
-    dataset = _load_dataset(args.dataset, args.dataset_json)
+    all_records = _load_dataset(args.dataset, args.dataset_json)
+
+    # Use only base + finetune splits — never touch test data
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    task_split = _load_task_split(args.dataset, project_root)
+    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    dataset = [all_records[i] for i in train_indices]
+    print(f"Using base+finetune split: {len(dataset)}/{len(all_records)} records (test excluded)")
+
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
 

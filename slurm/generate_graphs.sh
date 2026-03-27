@@ -53,12 +53,12 @@ DATASET_PATHS=(
 
 # Empty string = no task split (use all samples)
 TASK_SPLIT_PATHS=(
-    "experiment/gsm8k/task_split_gsm8k.json"
-    "experiment/aqua/task_split_aqua.json"
-    "experiment/humaneval/task_split_humaneval.json"
-    "experiment/mmlu/task_split_humaneval.json"
-    "experiment/multiarith/task_split_humaneval.json"
-    "experiment/svamp/task_split_humaneval.json"
+    "benchmark_datasets/gsm8k/task_split_gsm8k.json"
+    "benchmark_datasets/AQuA/task_split_aqua.json"
+    "benchmark_datasets/humaneval/task_split_humaneval.json"
+    "benchmark_datasets/MMLU/task_split_mmlu.json"
+    "benchmark_datasets/MultiArith/task_split_multiarith.json"
+    "benchmark_datasets/SVAMP/task_split_svamp.json"
 )
 
 # ---- Paths ------------------------------------------------------------------

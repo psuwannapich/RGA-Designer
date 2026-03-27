@@ -2,3 +2,5 @@ __pycache__
 ColdStartData_hf*/
 logs/
 benchmark_results/
+Qwen-Qwen3-4B-no_thinking/
+Qwen-Qwen3-8B/

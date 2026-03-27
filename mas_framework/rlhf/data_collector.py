@@ -277,6 +277,7 @@ class RLHFDataCollector:
         min_agents: int = 2,
         max_agents: int = 4,
         extra_results: Optional[List[Dict]] = None,
+        num_sample_for_tasks: int = 1,
     ) -> List[PreferencePair]:
         available_roles = list(self.role_descriptions.keys())
         task_embedding = self._encode_task(record["task"])
@@ -356,7 +357,7 @@ class RLHFDataCollector:
             if n_samples is None:
                 n_samples = (len(self.sample_temperatures)
                              if use_default_configs
-                             else len(self.sample_temperatures) * 3)
+                             else len(self.sample_temperatures) * num_sample_for_tasks)
 
             emb_tensor = torch.tensor(
                 task_embedding, device=self.arg_model.args.device
@@ -411,6 +412,7 @@ class RLHFDataCollector:
         max_agents: int = 4,
         checkpoint_every: int = 20,
         coldstart_pool: Optional[Dict[str, List[Dict]]] = None,
+        num_sample_for_tasks: int = 1,
     ) -> int:
         """
         Collect preference pairs for all tasks, writing .pkl shards to
@@ -431,7 +433,7 @@ class RLHFDataCollector:
         for i, record in enumerate(tqdm(task_records, desc="RLHF collection")):
             extra = (coldstart_pool or {}).get(record["task"], [])
             pairs = await self.collect_for_task(record, min_agents, max_agents,
-                                                extra_results=extra or None)
+                                                extra_results=extra or None, num_sample_for_tasks=num_sample_for_tasks)
             buffer.extend(pairs)
             total_pairs += len(pairs)
 

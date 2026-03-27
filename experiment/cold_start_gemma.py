@@ -307,13 +307,30 @@ def parse_args():
 BASE_RATE = 0.4  # fraction of train set used for cold-start graph generation
 
 _TASK_SPLIT_DIRS = {
-    'gsm8k':      'experiment/gsm8k',
-    'aqua':       'experiment/aqua',
-    'multiarith': 'experiment/multiarith',
-    'svamp':      'experiment/svamp',
-    'humaneval':  'experiment/humaneval',
-    'mmlu':       'experiment/mmlu',
+    'gsm8k':      'benchmark_datasets/gsm8k',
+    'aqua':       'benchmark_datasets/AQuA',
+    'multiarith': 'benchmark_datasets/MultiArith',
+    'svamp':      'benchmark_datasets/SVAMP',
+    'humaneval':  'benchmark_datasets/humaneval',
+    'mmlu':       'benchmark_datasets/MMLU',
 }
+
+
+def _load_task_split(dataset: str, project_root: str) -> dict:
+    """Load train/finetune/test split indices for the given dataset.
+
+    Returns a dict with keys: base_tasks_indices, finetune_tasks_indices, test_indices.
+    Raises FileNotFoundError if the split file does not exist.
+    """
+    subdir = _TASK_SPLIT_DIRS.get(dataset, f'benchmark_datasets/{dataset}')
+    split_path = os.path.join(project_root, subdir, f'task_split_{dataset}.json')
+    if not os.path.exists(split_path):
+        raise FileNotFoundError(
+            f"Task split file not found: {split_path}\n"
+            f"Run cold-start first: uv run cold-start --dataset {dataset} ..."
+        )
+    with open(split_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
 
 def _save_task_split(dataset: str, base_task_indices: list,
@@ -363,8 +380,9 @@ async def main():
     train_set_size = min(train_set_size, len(all_records))
 
     all_indices = list(range(len(all_records)))
+    random.shuffle(all_indices)
     train_indices = all_indices[:train_set_size]
-    test_indices  = all_indices[train_set_size:]
+    test_indices  = all_indices[train_set_size:train_set_size+1000]
 
     # Shuffle train to randomly assign base vs finetune
     finetune_candidates = train_indices.copy()
