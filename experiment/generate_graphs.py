@@ -101,16 +101,13 @@ def load_dataset(dataset: str, dataset_path: str, task_split_path: str):
                    for r in raw]
 
     elif dataset == 'mmlu':
-        from benchmark_datasets.mmlu_dataset import MMLUDataset
-        from benchmark_datasets.MMLU.download import download
+        from experiment.cold_start_gemma import _load_dataset
         from experiment.mmlu.mmlu_prompt_set import ROLE_DESCRIPTION
-        download()
-        ds = MMLUDataset('val', data_dir=dataset_path)
+        ds = _load_dataset('mmlu', dataset_path)
         records = []
         for r in ds:
-            inp = ds.record_to_input(r)
-            records.append({'task_text': inp['task'],
-                            'true_answer': ds.record_to_target_answer(r)})
+            records.append({'task_text': r['task'],
+                            'true_answer': r["answer"]})
 
     elif dataset == 'multiarith':
         from benchmark_datasets.gsm8k_dataset import multiarith_data_process
