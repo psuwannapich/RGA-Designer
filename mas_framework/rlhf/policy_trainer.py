@@ -1,20 +1,23 @@
 """
-Phase 2 — Policy (ARGDesigner) fine-tuning via REINFORCE + KL penalty.
+Phase 2 — Policy (ARGDesigner) fine-tuning via GRPO + KL penalty.
 
 Key additions to ARGDesigner
 -----------------------------
 sample_with_logprob() mirrors sample() but accumulates log π_θ(G | task)
-over every node-type and edge decision so that REINFORCE gradients flow back
+over every node-type and edge decision so that GRPO gradients flow back
 through the generator.
 
-REINFORCE + KL objective
--------------------------
-For each sampled graph G:
+GRPO + KL objective
+--------------------
+For a group of G graphs sampled per task:
 
-    r      = reward_model(G, task_emb)          — scalar, no grad
-    KL     = log π_θ(G) − log π_ref(G)          — per-trajectory KL estimate
-    loss   = −(r − kl_coeff × KL) × log π_θ(G)
+    r_i    = reward_model(G_i, task_emb)         — scalar, no grad
+    A_i    = (r_i − mean_group(r)) / std_group(r) — within-group advantage
+    KL_i   = log π_θ(G_i) − log π_ref(G_i)       — per-trajectory KL estimate
+    loss   = −mean_i[ (A_i − kl_coeff × KL_i) × log π_θ(G_i) ]
 
+Normalising within the group removes the reward model's arbitrary absolute
+offset and scale, making gradients robust to reward model miscalibration.
 The reference policy (π_ref) is a frozen copy of the initial ARGDesigner
 checkpoint, preventing the policy from collapsing towards reward hacking.
 """
@@ -255,19 +258,20 @@ class RLHFPolicyTrainer:
         save_path: Optional[str] = None,
     ):
         """
-        Main REINFORCE training loop.
+        Main GRPO training loop.
 
         For each task:
           - Draw *samples_per_task* graphs from the policy (with log-probs)
           - Score each with the reward model
+          - Compute within-group advantages: A_i = (r_i - mean) / std
           - Also compute reference log-probs for KL penalty
-          - Update policy via REINFORCE
+          - Update policy via GRPO loss
 
         Parameters
         ----------
         task_records     : list of {'task': str, 'task_embedding': np.ndarray}
         epochs           : number of full passes over task_records
-        samples_per_task : graphs sampled per task per step
+        samples_per_task : graphs sampled per task per step (≥2 required for std)
         save_path        : path to save policy checkpoint after each epoch
         """
         from sentence_transformers import SentenceTransformer
@@ -288,28 +292,40 @@ class RLHFPolicyTrainer:
                         sent_model.encode(task_text), dtype=torch.float32
                     ).to(self.device)
 
-                step_losses = []
+                # Collect all samples for this task first.
+                self.policy.train()
+                sample_logprobs, sample_rewards, sample_kls = [], [], []
                 for _ in range(samples_per_task):
-                    # Policy sample with log-prob (gradient attached)
-                    self.policy.train()
                     g, logprob_policy = sample_with_logprob(self.policy, t_emb)
 
-                    # Reference log-prob (no gradient)
                     with torch.no_grad():
                         _, logprob_ref = sample_with_logprob(self.ref_policy, t_emb)
-
-                    # Reward model score (no gradient)
-                    with torch.no_grad():
                         x, edge_index, batch = self._graph_to_reward_input(g, t_emb)
                         reward = self.reward_model(x, edge_index, batch)   # scalar tensor
 
-                    # Per-trajectory KL estimate: log π_θ − log π_ref
                     kl = logprob_policy.detach() - logprob_ref
+                    sample_logprobs.append(logprob_policy)
+                    sample_rewards.append(reward.detach())
+                    sample_kls.append(kl)
 
-                    # REINFORCE loss: −(r − β KL) × log π_θ
-                    loss = -(reward.detach() - self.kl_coeff * kl) * logprob_policy
+                # GRPO: normalise within the group (per-task mean and std).
+                # This removes the reward model's arbitrary absolute offset and
+                # scale so that gradient magnitudes are stable regardless of
+                # how the reward model is calibrated.
+                rewards_tensor = torch.stack(sample_rewards)        # [G]
+                group_mean = rewards_tensor.mean()
+                group_std = rewards_tensor.std() + 1e-8             # unbiased std
+                advantages = (rewards_tensor - group_mean) / group_std  # [G]
+
+                # Log raw rewards for monitoring (advantages always average to 0).
+                for r in sample_rewards:
+                    epoch_rewards.append(r.item())
+
+                step_losses = []
+                for logprob_policy, advantage, kl in zip(sample_logprobs, advantages, sample_kls):
+                    # GRPO loss: −(A_i − β KL_i) × log π_θ(G_i)
+                    loss = -(advantage - self.kl_coeff * kl) * logprob_policy
                     step_losses.append(loss)
-                    epoch_rewards.append(reward.item())
 
                 if step_losses:
                     total_loss = torch.stack(step_losses).mean()
@@ -321,6 +337,8 @@ class RLHFPolicyTrainer:
 
             avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
             avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
+            # avg_reward is the mean raw reward from the reward model.
+            # A rising trend indicates the policy generates higher-scored graphs.
             print(
                 f"Policy epoch {epoch}/{epochs} | "
                 f"loss {avg_loss:.4f} | mean reward {avg_reward:.4f}"
@@ -338,5 +356,5 @@ class RLHFPolicyTrainer:
                     save_path,
                 )
 
-        print("Policy fine-tuning complete.")
+        print("GRPO policy fine-tuning complete.")
         return self.policy
