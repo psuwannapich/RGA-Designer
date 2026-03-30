@@ -156,10 +156,11 @@ def apply_efficiency_strategy(graphs: list, pruning_ratio: float = 0.25) -> list
 # D_pruned
 # ---------------------------------------------------------------------------
 
-async def generate_pruned_data(args, dataset: list, output_dir: str) -> int:
+async def generate_pruned_data(args, dataset: list, output_dir: str, rlhf_dir: str = "") -> int:
     """
     Use the Phase-1 model to generate graphs for each task, prune edges,
     then verify with the LLM.  Saves successful pruned graphs as .pt files.
+    Incorrect graphs are saved to rlhf_dir (if provided) for RLHF pairing only.
     """
     print("\n" + "=" * 20 + f" D_pruned ({args.dataset}) " + "=" * 20)
     model = load_model(args.checkpoint_dir)
@@ -217,10 +218,20 @@ async def generate_pruned_data(args, dataset: list, output_dir: str) -> int:
                 if not isinstance(raw, str):
                     raw = str(raw)
                 predicted = _get_predict(args.dataset, raw)
-                if _is_correct(args.dataset, predicted, meta['record']['answer']):
+                correct = _is_correct(args.dataset, predicted, meta['record']['answer'])
+                if correct:
                     saved += 1
                     fname = f"pruned_{args.dataset}_q{meta['idx']}_g0.pt"
                     torch.save(meta['pyg_data'], os.path.join(output_dir, fname))
+                elif rlhf_dir:
+                    fname = f"pruned_{args.dataset}_q{meta['idx']}_g0_False.pt"
+                    from experiment.utils import save_graph_with_features
+                    save_graph_with_features(
+                        meta['pyg_data'],
+                        os.path.join(rlhf_dir, fname),
+                        {'mode': 'pruned', 'agent_nums': meta['pyg_data'].num_nodes,
+                         'is_correct': False, 'question': meta['task_text']},
+                    )
 
     print(f"D_pruned done: {saved} graphs saved")
     return saved
@@ -230,10 +241,10 @@ async def generate_pruned_data(args, dataset: list, output_dir: str) -> int:
 # D_simple
 # ---------------------------------------------------------------------------
 
-async def generate_simple_data(args, dataset: list, output_dir: str) -> int:
+async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: str = "") -> int:
     """
     Evaluate simple topology graphs (Chain / Star / Layered).
-    Saves graphs that correctly solve their task.
+    Saves correct graphs to output_dir and incorrect graphs to rlhf_dir (if provided).
     """
     print("\n" + "=" * 20 + f" D_simple ({args.dataset}) " + "=" * 20)
     role_desc = _get_role_description(args.dataset)
@@ -291,16 +302,25 @@ async def generate_simple_data(args, dataset: list, output_dir: str) -> int:
                 if not isinstance(raw, str):
                     raw = str(raw)
                 predicted = _get_predict(args.dataset, raw)
-                if _is_correct(args.dataset, predicted, meta['record']['answer']):
+                correct = _is_correct(args.dataset, predicted, meta['record']['answer'])
+                label = 'True' if correct else 'False'
+                fname = "_".join([
+                    args.dataset, str(meta['idx']), mode, str(agent_num), label
+                ]) + '.pt'
+                if correct:
                     saved += 1
-                    fname = "_".join([
-                        args.dataset, str(meta['idx']), mode, str(agent_num), 'True'
-                    ]) + '.pt'
                     save_graph_with_features(
                         meta['flow_graph'],
                         os.path.join(output_dir, fname),
                         {'mode': mode, 'agent_nums': agent_num,
                          'is_correct': True, 'question': meta['record']['task']},
+                    )
+                elif rlhf_dir:
+                    save_graph_with_features(
+                        meta['flow_graph'],
+                        os.path.join(rlhf_dir, fname),
+                        {'mode': mode, 'agent_nums': agent_num,
+                         'is_correct': False, 'question': meta['record']['task']},
                     )
 
     print(f"D_simple done: {saved} graphs saved")
@@ -428,6 +448,13 @@ async def main():
     d_eff_dir = os.path.join(args.output_dir, f'FinetuneData_{args.dataset}')
     os.makedirs(d_eff_dir, exist_ok=True)
 
+    # Rejected graphs (incorrect during finetune inference) go here.
+    # Kept separate from d_eff_dir so they are never loaded by run_finetuning()
+    # or generate_replay_data().  Used only as RLHF rejected candidates.
+    rlhf_dir = os.path.join(d_eff_dir, 'rlhf_rejected')
+    os.makedirs(rlhf_dir, exist_ok=True)
+    print(f"RLHF rejected dir : {rlhf_dir}")
+
     # Load finetune split from task_split file
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     split_subdir = _TASK_SPLIT_DIRS.get(args.dataset, f'experiment/{args.dataset}')
@@ -448,8 +475,8 @@ async def main():
     print(f"Finetune subset: {len(finetune_dataset)} tasks")
 
     # ---- Build D_eff --------------------------------------------------------
-    await generate_pruned_data(args, finetune_dataset, d_eff_dir)
-    await generate_simple_data(args, finetune_dataset, d_eff_dir)
+    await generate_pruned_data(args, finetune_dataset, d_eff_dir, rlhf_dir)
+    await generate_simple_data(args, finetune_dataset, d_eff_dir, rlhf_dir)
     generate_replay_data(args.cold_start_dir, d_eff_dir, args.replay_ratio)
 
     pt_count = len([f for f in os.listdir(d_eff_dir) if f.endswith('.pt')])

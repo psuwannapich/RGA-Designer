@@ -395,10 +395,21 @@ class RLHFDataCollector:
                       f"got {generated} after {max_attempts} attempts")
 
         results = [r for r in raw_results if isinstance(r, dict)]
-        if len(results) < 2:
-            return []
+        skipped = len(raw_results) - len(results)
+        n_correct   = sum(1 for r in results if     r["is_correct"])
+        n_incorrect = sum(1 for r in results if not r["is_correct"])
 
-        return create_preference_pairs(results, self.weights, self.pair_margin)
+        stats = {
+            "total":     len(results),
+            "correct":   n_correct,
+            "incorrect": n_incorrect,
+            "skipped":   skipped,
+        }
+
+        if len(results) < 2:
+            return [], stats
+
+        return create_preference_pairs(results, self.weights, self.pair_margin), stats
 
     # ------------------------------------------------------------------
     # Full dataset collection
@@ -426,16 +437,30 @@ class RLHFDataCollector:
         Returns the total number of preference pairs collected.
         """
         os.makedirs(output_dir, exist_ok=True)
-        shard_idx = 0
+        shard_idx  = 0
         buffer: List[PreferencePair] = []
         total_pairs = 0
 
+        # Cumulative graph-level counters across all tasks
+        cum_total     = 0
+        cum_correct   = 0
+        cum_incorrect = 0
+        cum_skipped   = 0
+
         for i, record in enumerate(tqdm(task_records, desc="RLHF collection")):
             extra = (coldstart_pool or {}).get(record["task"], [])
-            pairs = await self.collect_for_task(record, min_agents, max_agents,
-                                                extra_results=extra or None, num_sample_for_tasks=num_sample_for_tasks)
+            pairs, stats = await self.collect_for_task(
+                record, min_agents, max_agents,
+                extra_results=extra or None,
+                num_sample_for_tasks=num_sample_for_tasks,
+            )
             buffer.extend(pairs)
             total_pairs += len(pairs)
+
+            cum_total     += stats["total"]
+            cum_correct   += stats["correct"]
+            cum_incorrect += stats["incorrect"]
+            cum_skipped   += stats["skipped"]
 
             if (i + 1) % checkpoint_every == 0 or (i + 1) == len(task_records):
                 if buffer:
@@ -448,8 +473,20 @@ class RLHFDataCollector:
 
             print(
                 f"  Task {i+1}/{len(task_records)}: "
-                f"+{len(pairs)} pairs  (total so far: {total_pairs})"
+                f"graphs={stats['total']} "
+                f"(correct={stats['correct']}, incorrect={stats['incorrect']}"
+                + (f", skipped={stats['skipped']}" if stats["skipped"] else "")
+                + f")  +{len(pairs)} pairs  (total pairs: {total_pairs})"
             )
 
-        print(f"\nCollection complete. Total pairs: {total_pairs} in {shard_idx} shards.")
+        correct_rate = cum_correct / cum_total * 100 if cum_total else 0.0
+        print(
+            f"\n── Collection complete ──────────────────────────────\n"
+            f"  Tasks processed  : {len(task_records)}\n"
+            f"  Graphs evaluated : {cum_total}  "
+            f"(correct={cum_correct} [{correct_rate:.1f}%], "
+            f"incorrect={cum_incorrect}, skipped={cum_skipped})\n"
+            f"  Preference pairs : {total_pairs} in {shard_idx} shards\n"
+            f"────────────────────────────────────────────────────"
+        )
         return total_pairs

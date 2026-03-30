@@ -170,6 +170,33 @@ def _write_csv(output_dir: str, rows: list, dataset: str):
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def _checkpoint_path(output_dir: str) -> str:
+    return os.path.join(output_dir, "checkpoint.json")
+
+
+def _load_checkpoint(output_dir: str) -> dict:
+    """Return {config_key: set_of_completed_global_indices}."""
+    path = _checkpoint_path(output_dir)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return {k: set(v) for k, v in data.items()}
+    return {}
+
+
+def _save_checkpoint(output_dir: str, checkpoint: dict) -> None:
+    """Atomically persist the checkpoint (write-then-rename)."""
+    path = _checkpoint_path(output_dir)
+    tmp = path + ".tmp"
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({k: sorted(v) for k, v in checkpoint.items()}, f)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
 # Core evaluation loop
 # ---------------------------------------------------------------------------
 
@@ -181,17 +208,38 @@ async def evaluate_and_save(
     agent_num: int,
     output_dir: str,
     solved_counter: dict,
+    checkpoint: dict,
+    rlhf_dir: str = "",
 ):
-    num_batches = math.ceil(len(dataset_records) / args.batch_size)
+    config_key = f"{mode}_{agent_num}"
+    done_indices = checkpoint.get(config_key, set())
+
+    # Build list of (global_idx, record) skipping already-completed tasks.
+    # global_idx is the position in dataset_records; used in filenames and checkpoint.
+    pending = [
+        (global_idx, record)
+        for global_idx, record in enumerate(dataset_records)
+        if global_idx not in done_indices
+    ]
+
+    if not pending:
+        print(f"  {mode}-{agent_num}: all {len(dataset_records)} tasks already done, skipping.")
+        return
+
+    skipped = len(dataset_records) - len(pending)
+    if skipped:
+        print(f"  {mode}-{agent_num}: resuming — {skipped} done, {len(pending)} remaining.")
+
+    num_batches = math.ceil(len(pending) / args.batch_size)
     total_solved = 0
 
     for i_batch in tqdm(range(num_batches), desc=f"{mode}-{agent_num}"):
-        batch = dataset_records[i_batch * args.batch_size: (i_batch + 1) * args.batch_size]
+        batch = pending[i_batch * args.batch_size: (i_batch + 1) * args.batch_size]
         if not batch:
             continue
 
         tasks = []
-        for rec_idx, record in enumerate(batch):
+        for global_idx, record in batch:
             realized = copy.deepcopy(graph)
             input_dict = {"task": record["task"]}
             flow_graph = realized.to_pyg_graph(input_dict)
@@ -201,7 +249,6 @@ async def evaluate_and_save(
                 decision_method=_get_decision_method(args.dataset),
                 pyg_data=flow_graph,
             )
-            global_idx = i_batch * args.batch_size + rec_idx
             metadata = {
                 "record": record,
                 "flow_graph": flow_graph,
@@ -215,11 +262,13 @@ async def evaluate_and_save(
         )
 
         csv_rows = []
+        batch_completed = set()
         for i, result in enumerate(results):
             meta = tasks[i][1]
             record = meta["record"]
 
             if isinstance(result, Exception):
+                # Don't checkpoint errors so they are retried next run.
                 print(f"  [error] task {meta['global_idx']}: {result}")
                 continue
 
@@ -232,21 +281,32 @@ async def evaluate_and_save(
             predicted = _get_predict(args.dataset, raw_answer)
             correct = _is_correct(args.dataset, predicted, record["answer"])
 
+            name = "_".join([
+                args.dataset,
+                str(meta["global_idx"]),
+                mode,
+                str(agent_num),
+                str(correct),
+            ])
             if correct:
                 total_solved += 1
                 solved_counter['total'] += 1
-                name = "_".join([
-                    args.dataset,
-                    str(meta["global_idx"]),
-                    mode,
-                    str(agent_num),
-                    "True",
-                ])
                 filepath = os.path.join(output_dir, f"{name}.pt")
                 save_graph_with_features(meta["flow_graph"], filepath, {
                     "mode": mode,
                     "agent_nums": agent_num,
                     "is_correct": True,
+                    "question": meta["question"],
+                })
+            elif rlhf_dir:
+                # Save incorrect graphs for RLHF preference pairing only —
+                # rlhf_dir is intentionally separate from output_dir so these
+                # are never loaded by the ARGDesigner trainer or replay buffer.
+                filepath = os.path.join(rlhf_dir, f"{name}.pt")
+                save_graph_with_features(meta["flow_graph"], filepath, {
+                    "mode": mode,
+                    "agent_nums": agent_num,
+                    "is_correct": False,
                     "question": meta["question"],
                 })
 
@@ -259,10 +319,18 @@ async def evaluate_and_save(
                 "size": agent_num,
                 "is_correct": correct,
             })
+            batch_completed.add(meta["global_idx"])
 
         _write_csv(output_dir, csv_rows, args.dataset)
 
-    print(f"  {mode}-{agent_num}: solved {total_solved}/{len(dataset_records)}")
+        # Persist checkpoint after each batch so partial progress is never lost.
+        if batch_completed:
+            if config_key not in checkpoint:
+                checkpoint[config_key] = set()
+            checkpoint[config_key].update(batch_completed)
+            _save_checkpoint(output_dir, checkpoint)
+
+    print(f"  {mode}-{agent_num}: solved {total_solved}/{len(pending)} new tasks")
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +473,13 @@ async def main():
     print(f"\nUsing {len(sampled)} base tasks for cold-start generation.")
 
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"Output directory: {args.output_dir}\n")
+    print(f"Output directory: {args.output_dir}")
+
+    # Rejected graphs go here — separate from training data so the ARGDesigner
+    # trainer never sees them.  Used only as the rejected side of RLHF pairs.
+    rlhf_dir = os.path.join(args.output_dir, "rlhf_rejected")
+    os.makedirs(rlhf_dir, exist_ok=True)
+    print(f"RLHF rejected dir: {rlhf_dir}\n")
 
     role_desc = _get_role_description(args.dataset)
     available_roles = list(role_desc.keys())
@@ -416,6 +490,13 @@ async def main():
     print(f"LLM: {args.llm_name}")
     print(f"Topologies: {configs}")
     print(f"Roles: {available_roles}\n")
+
+    # Load checkpoint — keys are "{mode}_{agent_num}", values are sets of
+    # completed global_idx values.  On a clean run the file won't exist yet.
+    checkpoint = _load_checkpoint(args.output_dir)
+    if checkpoint:
+        total_done = sum(len(v) for v in checkpoint.values())
+        print(f"Resuming from checkpoint: {total_done} task-config pairs already done.\n")
 
     solved_counter = {'total': 0}
 
@@ -444,6 +525,8 @@ async def main():
             agent_num=agent_num,
             output_dir=args.output_dir,
             solved_counter=solved_counter,
+            checkpoint=checkpoint,
+            rlhf_dir=rlhf_dir,
         )
 
     print(f"\nDone. Total graphs saved: {solved_counter['total']}")

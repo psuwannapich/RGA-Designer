@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
 #SBATCH --time=2-00:00:00
@@ -88,8 +88,9 @@ CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-1200}"
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"
 ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"
-COLDSTART_DIRS="${COLDSTART_DIRS:-}"
+COLDSTART_DIRS="${COLDSTART_DIRS:-}"       # user-specified extra dirs
 ARG_MODEL_SAMPLES="${ARG_MODEL_SAMPLES:-}"
+COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
 
 # Reward model
 RM_ROOT="${RM_ROOT:-rlhf_checkpoints}"
@@ -119,12 +120,14 @@ PREFERENCE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${PREFERENCE_ROOT}/${DATASET}"
 RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/${DATASET}/reward_model.pth"
 POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${DATASET}/policy_rlhf.pth"
 MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
+COLD_START_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${COLD_START_ROOT}/${DATASET}"
+D_EFF_DIR="$MODEL_DIR/FinetuneData_${DATASET}"
 
 # ---- vLLM inference server --------------------------------------------------
 # Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
-VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_TP="${VLLM_TP:-2}"                  # tensor-parallel GPUs for the server
 VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
@@ -137,7 +140,7 @@ _start_vllm_server() {
         --dtype                  float16 \
         --trust-remote-code \
         --max-model-len          8192 \
-        --gpu-memory-utilization 0.9 \
+        --gpu-memory-utilization 0.8 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \
         --chat-template          "$VLLM_CHAT_TEMPLATE") \
@@ -226,8 +229,15 @@ else
         --seed               "$SEED" \
         --sample_temperatures $SAMPLE_TEMPERATURES \
         ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
-        ${COLDSTART_DIRS:+--coldstart_dirs $COLDSTART_DIRS} \
-        ${ARG_MODEL_SAMPLES:+--arg_model_samples "$ARG_MODEL_SAMPLES"}
+        ${ARG_MODEL_SAMPLES:+--arg_model_samples "$ARG_MODEL_SAMPLES"} \
+        $(
+            # Auto-include rlhf_rejected dirs from cold start and finetune
+            # alongside any user-specified COLDSTART_DIRS.
+            _dirs="${COLDSTART_DIRS:-}"
+            [[ -d "$COLD_START_DIR/rlhf_rejected" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR/rlhf_rejected"
+            [[ -d "$D_EFF_DIR/rlhf_rejected"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR/rlhf_rejected"
+            [[ -n "$_dirs" ]] && echo "--coldstart_dirs $_dirs"
+        )
 
     mark_done stage1_collect
     echo "  ✓ Collect → $PREFERENCE_DIR"

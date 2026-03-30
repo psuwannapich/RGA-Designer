@@ -141,8 +141,33 @@ def _load_coldstart_pool(coldstart_dirs):
                 "mode": mode, "num_nodes": num_nodes,
             })
 
-    total = sum(len(v) for v in pool.values())
-    print(f"  ColdStart pool: {total} graphs across {len(pool)} tasks ({skipped} skipped)")
+    # ---- Summary stats -------------------------------------------------------
+    total      = sum(len(v) for v in pool.values())
+    n_correct  = sum(1 for graphs in pool.values() for g in graphs if     g["is_correct"])
+    n_rejected = sum(1 for graphs in pool.values() for g in graphs if not g["is_correct"])
+
+    # Tasks that have at least one correct AND one incorrect graph — these are
+    # the only tasks that can form a preference pair from the cold-start pool.
+    n_pairable = sum(
+        1 for graphs in pool.values()
+        if any(g["is_correct"] for g in graphs) and any(not g["is_correct"] for g in graphs)
+    )
+
+    # Topology breakdown
+    from collections import Counter
+    mode_counts = Counter(g["mode"] for graphs in pool.values() for g in graphs)
+
+    # Node-count distribution
+    node_counts = [g["num_nodes"] for graphs in pool.values() for g in graphs]
+    avg_nodes   = sum(node_counts) / len(node_counts) if node_counts else 0
+
+    print(f"\n  ── Cold-start pool statistics ──────────────────────")
+    print(f"  Total graphs  : {total}  ({n_correct} correct, {n_rejected} rejected, {skipped} skipped)")
+    print(f"  Tasks         : {len(pool)}  ({n_pairable} have both correct+rejected → pairable)")
+    print(f"  Avg nodes/graph: {avg_nodes:.1f}")
+    print(f"  By topology   :", "  ".join(f"{m}={c}" for m, c in sorted(mode_counts.items())))
+    print(f"  ────────────────────────────────────────────────────\n")
+
     return dict(pool)
 
 

@@ -98,7 +98,7 @@ export DISABLE_THINKING PYTHONPATH
 # Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
-VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_TP="${VLLM_TP:-2}"                  # tensor-parallel GPUs for the server
 VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
@@ -111,7 +111,7 @@ _start_vllm_server() {
         --dtype                  float16 \
         --trust-remote-code \
         --max-model-len          8192 \
-        --gpu-memory-utilization 0.9 \
+        --gpu-memory-utilization 0.8 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \
         --chat-template          "$VLLM_CHAT_TEMPLATE") \
