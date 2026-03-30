@@ -1,36 +1,29 @@
-import aiohttp
-from typing import List, Union, Optional
+"""
+OpenAI-compatible chat backend.
+
+Used for two purposes:
+  1. Ollama local models (short names like "gemma3", "llama3.2")
+  2. vLLM OpenAI-compatible server (USE_VLLM_SERVER=1)
+
+Connection is controlled by env vars read at import time:
+  LOCAL_BASE_URL   (default: http://localhost:11434/v1)
+  LOCAL_API_KEY    (default: ollama)
+"""
+
+import os
+from typing import List, Union, Optional, Any, Dict
+
 from tenacity import retry, wait_random_exponential, stop_after_attempt
-from typing import Dict, Any
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 from mas_framework.llm.format import Message
-from mas_framework.llm.price import cost_count
-from mas_framework.llm.llm import LLM
+from mas_framework.llm.llm import LLM, qwen3_sampling
 from mas_framework.llm.llm_registry import LLMRegistry
 
-
 load_dotenv()
-import os
 LOCAL_BASE_URL = os.getenv("LOCAL_BASE_URL", "http://localhost:11434/v1")
-LOCAL_API_KEY = os.getenv("LOCAL_API_KEY", "ollama")
-from openai import OpenAI, AsyncOpenAI
-
-
-@retry(wait=wait_random_exponential(max=100), stop=stop_after_attempt(3))
-async def achat(
-        model: str,
-        msg: List[Dict],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = 0.2,
-        num_comps: Optional[int] = 1,
-):
-    client = AsyncOpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
-    chat_completion = await client.chat.completions.create(messages=msg, model=model, max_tokens=max_tokens,
-                                                           temperature=temperature)
-
-    response = chat_completion.choices[0].message.content
-    return response
+LOCAL_API_KEY  = os.getenv("LOCAL_API_KEY",  "ollama")
 
 
 @LLMRegistry.register('GPTChat')
@@ -39,30 +32,57 @@ class GPTChat(LLM):
     def __init__(self, model_name: str):
         self.model_name = model_name
 
+    @retry(wait=wait_random_exponential(max=100), stop=stop_after_attempt(3))
     async def agen(
-            self,
-            messages: List[Message],
-            max_tokens: Optional[int] = None,
-            temperature: Optional[float] = None,
-            num_comps: Optional[int] = None,
+        self,
+        messages: List[Message],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        num_comps: Optional[int] = None,
     ) -> Union[List[str], str]:
-
-        if max_tokens is None:
-            max_tokens = self.DEFAULT_MAX_TOKENS
+        sp = qwen3_sampling()
         if temperature is None:
-            temperature = self.DEFAULT_TEMPERATURE
-        if num_comps is None:
-            num_comps = self.DEFUALT_NUM_COMPLETIONS
+            temperature = sp["temperature"]
 
         if isinstance(messages, str):
-            messages = [Message(role="user", content=messages)]
-        return await achat(self.model_name, messages)
+            messages = [{"role": "user", "content": messages}]
+
+        no_think = os.getenv("DISABLE_THINKING", "1").lower() in ("1", "true", "yes")
+        extra_body = {"top_k": sp.get("top_k", -1)}
+        if no_think:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        # Don't pass max_tokens when unset — the server will use all remaining
+        # context after the input, avoiding "max_tokens too large" errors when
+        # the default equals the full context window (e.g. --max-model-len 8192).
+        create_kwargs: Dict[str, Any] = dict(
+            messages=messages,
+            model=self.model_name,
+            temperature=temperature,
+            top_p=sp.get("top_p", 1.0),
+            extra_body=extra_body,
+        )
+        if max_tokens is not None:
+            create_kwargs["max_tokens"] = max_tokens
+
+        client = AsyncOpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
+        completion = await client.chat.completions.create(**create_kwargs)
+
+        if completion.usage:
+            from mas_framework.utils.globals import PromptTokens, CompletionTokens
+            PromptTokens.instance().value   += completion.usage.prompt_tokens
+            CompletionTokens.instance().value += completion.usage.completion_tokens
+
+        return completion.choices[0].message.content or ""
 
     def gen(
-            self,
-            messages: List[Message],
-            max_tokens: Optional[int] = None,
-            temperature: Optional[float] = None,
-            num_comps: Optional[int] = None,
+        self,
+        messages: List[Message],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        num_comps: Optional[int] = None,
     ) -> Union[List[str], str]:
-        pass
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(
+            self.agen(messages, max_tokens, temperature, num_comps)
+        )

@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
 #SBATCH --time=2-00:00:00
@@ -70,7 +70,7 @@ MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 NUM_TASKS="${NUM_TASKS:-0}"
@@ -89,7 +89,7 @@ FINETUNE_LR="${FINETUNE_LR:-5e-5}"
 PRUNING_RATIO="${PRUNING_RATIO:-0.25}"
 REPLAY_RATIO="${REPLAY_RATIO:-0.3}"
 
-EVAL_BATCH="${EVAL_BATCH:-8}"
+EVAL_BATCH="${EVAL_BATCH:-2}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
 
@@ -100,6 +100,48 @@ RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 
 COLD_START_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${COLD_START_ROOT}/${DATASET}"
 CHECKPOINT_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
+
+# ---- vLLM inference server --------------------------------------------------
+# Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
+USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
+VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0} + 10))}"
+VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
+VLLM_PID=""
+
+_start_vllm_server() {
+    echo "▶ Starting vLLM server for '$HF_MODEL' on port $VLLM_PORT ..."
+    mkdir -p "$PROJECT_ROOT/logs"
+    ("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL" \
+        --port                   "$VLLM_PORT" \
+        --dtype                  float16 \
+        --trust-remote-code \
+        --max-model-len          8192 \
+        --gpu-memory-utilization 0.9 \
+        --tensor-parallel-size   "$VLLM_TP" \
+        --enforce-eager \
+        --chat-template          "$VLLM_CHAT_TEMPLATE") \
+        > "$PROJECT_ROOT/logs/vllm_${SLURM_JOB_ID:-local}.log" 2>&1 &
+    VLLM_PID=$!
+    echo "  Server PID : $VLLM_PID"
+    echo "  Server log : logs/vllm_${SLURM_JOB_ID:-local}.log"
+    echo "  Waiting for vLLM to be ready ..."
+    for _i in $(seq 1 120); do
+        if curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; then
+            echo "  ✓ vLLM server ready (waited $((_i * 5))s)"
+            return 0
+        fi
+        sleep 5
+    done
+    echo "ERROR: vLLM server did not start within 10 minutes." >&2
+    exit 1
+}
+
+_stop_vllm_server() {
+    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null && echo "  ✓ vLLM server stopped."
+}
+trap _stop_vllm_server EXIT
 
 # ---- Stage checkpointing ------------------------------------------------
 # Sentinel files live in STATE_DIR.  Delete one to re-run that stage.
@@ -120,8 +162,17 @@ echo "  Cold-start tasks : ${NUM_TASKS} (0=all)  iter=$NUM_ITERATIONS"
 echo "  Pre-train epochs : $EPOCHS  lr=$TRAIN_LR"
 echo "  Finetune  epochs : $FINETUNE_EPOCHS  lr=$FINETUNE_LR"
 echo "  Eval batch       : $EVAL_BATCH"
+echo "  vLLM server      : $([ "$USE_VLLM_SERVER" = "1" ] && echo "enabled (port $VLLM_PORT, tp=$VLLM_TP)" || echo "disabled (HF backend)")"
 echo "  Started at       : $(date)"
 echo "════════════════════════════════════════════════"
+
+if [[ "$USE_VLLM_SERVER" == "1" ]]; then
+    export LOCAL_BASE_URL="http://localhost:${VLLM_PORT}/v1"
+    export LOCAL_API_KEY="EMPTY"
+    export USE_VLLM_SERVER USE_VLLM=0
+    _start_vllm_server
+    echo ""
+fi
 
 # ---- Stage 1: Cold-start ----------------------------------------------------
 echo ""
@@ -218,8 +269,6 @@ GRAPHS_FILE="$GRAPHS_DIR/${DATASET}_graphs.jsonl"
 DECISION_METHODS=(FinalRefer FinalRefer FinalRefer FinalRefer FinalWriteCode FinalRefer)
 DECISION="${DECISION_METHODS[$SLURM_ARRAY_TASK_ID]}"
 
-export USE_VLLM="${USE_VLLM:-0}"
-export VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"
 export PYTHONPATH
 
 NO_EF_FLAG=""

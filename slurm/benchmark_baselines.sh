@@ -5,10 +5,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --array=0-47        # 8 methods × 6 datasets = 48 tasks
 #SBATCH -p gpu
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 
@@ -51,8 +51,6 @@
 
 set -euo pipefail
 
-
-
 # ---- Method / dataset registries -------------------------------------------
 METHODS=(vanilla cot self_consistency chain complete random star llm_debate)
 DATASETS=(gsm8k aqua multiarith svamp humaneval mmlu)
@@ -92,11 +90,51 @@ PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 # ---- Configurable knobs -----------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"                     # Qwen/Qwen3-8B → Qwen-Qwen3-8B
-USE_VLLM="${USE_VLLM:-1}"                          # 1 = vLLM backend (faster), 0 = HuggingFace
-VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"   # match --gres=gpu:2
 DISABLE_THINKING="${DISABLE_THINKING:-1}"          # 1 = skip <think> chain (Qwen3 no-thinking mode)
 MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
-export USE_VLLM VLLM_TENSOR_PARALLEL_SIZE DISABLE_THINKING PYTHONPATH
+export DISABLE_THINKING PYTHONPATH
+
+# ---- vLLM inference server --------------------------------------------------
+# Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
+USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
+VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
+VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
+VLLM_PID=""
+
+_start_vllm_server() {
+    echo "▶ Starting vLLM server for '$HF_MODEL' on port $VLLM_PORT ..."
+    mkdir -p "$PROJECT_ROOT/logs"
+    ("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL" \
+        --port                   "$VLLM_PORT" \
+        --dtype                  float16 \
+        --trust-remote-code \
+        --max-model-len          8192 \
+        --gpu-memory-utilization 0.9 \
+        --tensor-parallel-size   "$VLLM_TP" \
+        --enforce-eager \
+        --chat-template          "$VLLM_CHAT_TEMPLATE") \
+        > "$PROJECT_ROOT/logs/vllm_${SLURM_JOB_ID:-local}.log" 2>&1 &
+    VLLM_PID=$!
+    echo "  Server PID : $VLLM_PID"
+    echo "  Server log : logs/vllm_${SLURM_JOB_ID:-local}.log"
+    echo "  Waiting for vLLM to be ready ..."
+    for _i in $(seq 1 120); do
+        if curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; then
+            echo "  ✓ vLLM server ready (waited $((_i * 5))s)"
+            return 0
+        fi
+        sleep 5
+    done
+    echo "ERROR: vLLM server did not start within 10 minutes." >&2
+    exit 1
+}
+
+_stop_vllm_server() {
+    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null && echo "  ✓ vLLM server stopped."
+}
+trap _stop_vllm_server EXIT
 NUM_AGENTS="${NUM_AGENTS:-}"          # empty = use per-method default
 SC_SAMPLES="${SC_SAMPLES:-5}"
 LIMIT="${LIMIT:-}"                    # empty = evaluate all
@@ -126,10 +164,19 @@ echo "Dataset       : $DATASET  (index $DATASET_IDX)"
 echo "HF Model      : $HF_MODEL"
 echo "Eval batch    : $EVAL_BATCH"
 echo "Output file   : $OUTPUT_FILE"
+echo "vLLM server   : $([ "$USE_VLLM_SERVER" = "1" ] && echo "enabled (port $VLLM_PORT, tp=$VLLM_TP)" || echo "disabled (HF backend)")"
 echo "Started at    : $(date)"
 echo "========================================"
 
 cd "$PROJECT_ROOT"
+
+if [[ "$USE_VLLM_SERVER" == "1" ]]; then
+    export LOCAL_BASE_URL="http://localhost:${VLLM_PORT}/v1"
+    export LOCAL_API_KEY="EMPTY"
+    export USE_VLLM_SERVER USE_VLLM=0
+    _start_vllm_server
+    echo ""
+fi
 
 # ---- Build optional flags ---------------------------------------------------
 AGENTS_FLAG=""

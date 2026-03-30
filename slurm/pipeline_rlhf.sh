@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
 #SBATCH --time=2-00:00:00
@@ -71,7 +71,7 @@ MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 SEED="${SEED:-42}"
@@ -104,13 +104,14 @@ BOTH_WRONG_WEIGHT="${BOTH_WRONG_WEIGHT:-0.2}"
 # Policy
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 POLICY_ROOT="${POLICY_ROOT:-rlhf_checkpoints}"
-POLICY_EPOCHS="${POLICY_EPOCHS:-10}"
-POLICY_LR="${POLICY_LR:-1e-5}"
+POLICY_EPOCHS="${POLICY_EPOCHS:-30}"
+POLICY_NUM_TASKS="${POLICY_NUM_TASKS:-200}"
+POLICY_LR="${POLICY_LR:-5e-6}"
 KL_COEFF="${KL_COEFF:-0.1}"
 SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-2}"
 
 # Benchmark
-EVAL_BATCH="${EVAL_BATCH:-8}"
+EVAL_BATCH="${EVAL_BATCH:-2}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 
 # Derived paths
@@ -118,6 +119,48 @@ PREFERENCE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${PREFERENCE_ROOT}/${DATASET}"
 RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/${DATASET}/reward_model.pth"
 POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${DATASET}/policy_rlhf.pth"
 MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
+
+# ---- vLLM inference server --------------------------------------------------
+# Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
+USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
+VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
+VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
+VLLM_PID=""
+
+_start_vllm_server() {
+    echo "▶ Starting vLLM server for '$HF_MODEL' on port $VLLM_PORT ..."
+    mkdir -p "$PROJECT_ROOT/logs"
+    ("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL" \
+        --port                   "$VLLM_PORT" \
+        --dtype                  float16 \
+        --trust-remote-code \
+        --max-model-len          8192 \
+        --gpu-memory-utilization 0.9 \
+        --tensor-parallel-size   "$VLLM_TP" \
+        --enforce-eager \
+        --chat-template          "$VLLM_CHAT_TEMPLATE") \
+        > "$PROJECT_ROOT/logs/vllm_${SLURM_JOB_ID:-local}.log" 2>&1 &
+    VLLM_PID=$!
+    echo "  Server PID : $VLLM_PID"
+    echo "  Server log : logs/vllm_${SLURM_JOB_ID:-local}.log"
+    echo "  Waiting for vLLM to be ready ..."
+    for _i in $(seq 1 120); do
+        if curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; then
+            echo "  ✓ vLLM server ready (waited $((_i * 5))s)"
+            return 0
+        fi
+        sleep 5
+    done
+    echo "ERROR: vLLM server did not start within 10 minutes." >&2
+    exit 1
+}
+
+_stop_vllm_server() {
+    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null && echo "  ✓ vLLM server stopped."
+}
+trap _stop_vllm_server EXIT
 
 # ---- Stage checkpointing ------------------------------------------------
 # Sentinel files live in STATE_DIR.  Delete one to re-run that stage.
@@ -135,11 +178,21 @@ echo "  Node             : $SLURM_NODELIST"
 echo "  Dataset          : $DATASET"
 echo "  Model            : $HF_MODEL  (slug: $MODEL_SLUG)"
 echo "  Collect tasks    : $RLHF_NUM_TASKS"
+echo "  Policy tasks    : $POLICY_NUM_TASKS"
 echo "  RM epochs        : $RM_EPOCHS"
 echo "  Policy epochs    : $POLICY_EPOCHS"
 echo "  Base model dir   : $MODEL_DIR"
+echo "  vLLM server      : $([ "$USE_VLLM_SERVER" = "1" ] && echo "enabled (port $VLLM_PORT, tp=$VLLM_TP)" || echo "disabled (HF backend)")"
 echo "  Started at       : $(date)"
 echo "════════════════════════════════════════════════"
+
+if [[ "$USE_VLLM_SERVER" == "1" ]]; then
+    export LOCAL_BASE_URL="http://localhost:${VLLM_PORT}/v1"
+    export LOCAL_API_KEY="EMPTY"
+    export USE_VLLM_SERVER USE_VLLM=0
+    _start_vllm_server
+    echo ""
+fi
 
 # Sanity check — base ARGDesigner checkpoint must exist.
 if [[ ! -d "$MODEL_DIR" ]]; then
@@ -219,7 +272,7 @@ else
         --rm_checkpoint      "$RM_CHECKPOINT" \
         --policy_checkpoint  "$POLICY_CHECKPOINT" \
         --dataset_json       "$DATASET_JSON" \
-        --num_tasks          "$RLHF_NUM_TASKS" \
+        --num_tasks          "$POLICY_NUM_TASKS" \
         --policy_epochs      "$POLICY_EPOCHS" \
         --policy_lr          "$POLICY_LR" \
         --kl_coeff           "$KL_COEFF" \
@@ -256,8 +309,6 @@ NO_EF="${NO_EF:-0}"
 NO_EF_FLAG=""
 [[ "$NO_EF" == "1" ]] && NO_EF_FLAG="--no_ef"
 
-export USE_VLLM="${USE_VLLM:-0}"
-export VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-2}"
 export PYTHONPATH
 
 # ---- Stage 4a: Generate graphs (RLHF policy) --------------------------------

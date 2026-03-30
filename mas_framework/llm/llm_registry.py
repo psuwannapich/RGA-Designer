@@ -27,9 +27,15 @@ class LLMRegistry:
             model = cls.registry.get(model_name)
         elif '/' in model_name:
             # HuggingFace Hub model ID (e.g. "Qwen/Qwen3-8B").
-            # Set USE_VLLM=1 to route through the vLLM backend instead of
-            # HuggingFace transformers for higher GPU utilisation.
-            if os.getenv('USE_VLLM', '').lower() in ('1', 'true', 'yes'):
+            #
+            # USE_VLLM_SERVER=1  → GPTChat calling an external vllm serve process
+            #                      (set LOCAL_BASE_URL / LOCAL_API_KEY accordingly)
+            # USE_VLLM=1         → VLLMChat loading the model in-process
+            # (default)          → HFChat via HuggingFace transformers
+            if os.getenv('USE_VLLM_SERVER', '').lower() in ('1', 'true', 'yes'):
+                import mas_framework.llm.gpt_chat  # noqa: F401
+                model = cls.registry.get('GPTChat', model_name)
+            elif os.getenv('USE_VLLM', '').lower() in ('1', 'true', 'yes'):
                 try:
                     import mas_framework.llm.vllm_chat  # noqa: F401
                     model = cls.registry.get('VLLMChat', model_name)
