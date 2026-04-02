@@ -277,6 +277,9 @@ class RLHFPolicyTrainer:
         from sentence_transformers import SentenceTransformer
         sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
 
+        best_reward = float("-inf")
+        best_epoch = 0
+
         for epoch in range(1, epochs + 1):
             epoch_losses, epoch_rewards = [], []
 
@@ -339,12 +342,17 @@ class RLHFPolicyTrainer:
             avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
             # avg_reward is the mean raw reward from the reward model.
             # A rising trend indicates the policy generates higher-scored graphs.
+            is_best = avg_reward > best_reward
+            if is_best:
+                best_reward = avg_reward
+                best_epoch = epoch
             print(
                 f"Policy epoch {epoch}/{epochs} | "
                 f"loss {avg_loss:.4f} | mean reward {avg_reward:.4f}"
+                + (" [best]" if is_best else "")
             )
 
-            if save_path:
+            if save_path and is_best:
                 os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
                 torch.save(
                     {
@@ -356,5 +364,15 @@ class RLHFPolicyTrainer:
                     save_path,
                 )
 
-        print("GRPO policy fine-tuning complete.")
+        # Load the best checkpoint back into the policy.
+        if save_path and os.path.exists(save_path):
+            ckpt = torch.load(save_path, map_location=self.device, weights_only=False)
+            self.policy.load_state_dict(ckpt["model_state_dict"])
+            print(
+                f"GRPO policy fine-tuning complete. "
+                f"Loaded best model from epoch {best_epoch} "
+                f"(mean reward {best_reward:.4f})."
+            )
+        else:
+            print("GRPO policy fine-tuning complete.")
         return self.policy

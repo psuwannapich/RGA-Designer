@@ -257,10 +257,20 @@ def _train_rm(args):
         output_dim=args.rm_output_dim,
     )
 
-    print(f"Training reward model on data from {args.preference_dir} ...")
+    # --preference_dirs (multi-dataset global RM) takes precedence over
+    # --preference_dir (single-dataset per-dataset RM).
+    if getattr(args, "preference_dirs", None):
+        data_src = args.preference_dirs
+        print(f"Training global reward model on {len(data_src)} preference dirs ...")
+        for d in data_src:
+            print(f"  {d}")
+    else:
+        data_src = args.preference_dir
+        print(f"Training reward model on data from {data_src} ...")
+
     train_reward_model(
         model=model,
-        data_dir=args.preference_dir,
+        data_dir=data_src,
         device=device,
         epochs=args.rm_epochs,
         lr=args.rm_lr,
@@ -292,7 +302,12 @@ def _train_policy(args):
     print(f"Loading reward model from {args.rm_checkpoint} ...")
     reward_model = load_reward_model(args.rm_checkpoint, device)
 
-    dataset = _load_dataset(args.dataset, args.dataset_json)
+    all_records = _load_dataset(args.dataset, args.dataset_json)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    task_split = _load_task_split(args.dataset, project_root)
+    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    dataset = [all_records[i] for i in train_indices]
+    # dataset = all_records
 
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
@@ -393,6 +408,9 @@ def parse_args():
                         "inference (is_correct is already recorded in each .pt file).")
 
     # Reward model
+    p.add_argument("--preference_dirs", nargs="+", default=None,
+                   help="Multiple preference dirs to pool for global reward model training "
+                        "(overrides --preference_dir for train_rm phase)")
     p.add_argument("--rm_checkpoint", default=None,
                    help="Reward model checkpoint path (default: rlhf_checkpoints/<dataset>/reward_model.pth)")
     p.add_argument("--rm_epochs", type=int, default=20)

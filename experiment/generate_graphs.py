@@ -51,7 +51,6 @@ def parse_args():
     p.add_argument('--no_ef', action='store_true',
                    help="Use best_model.pth instead of ef_best_model.pth")
     p.add_argument('--model_type', type=str, default='arg_designer',
-                   choices=['arg_designer', 'rlhf'],
                    help="Label of the graph generator model (logged in output)")
     return p.parse_args()
 

@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=arg_pipeline_train
-#SBATCH --output=logs/pipeline_train_%A_%a.out
-#SBATCH --error=logs/pipeline_train_%A_%a.err
+#SBATCH --job-name=arg_llama_train
+#SBATCH --output=logs/llama_train_%A_%a.out
+#SBATCH --error=logs/llama_train_%A_%a.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:2
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
@@ -58,7 +58,7 @@ DATASET_JSONS=(
     "benchmark_datasets/humaneval/humaneval-py.jsonl"
     "benchmark_datasets/MMLU/data"
 )
-DATASET_MIN_AGENTS=(3 3 3 3 3 3)
+DATASET_MIN_AGENTS=(2 2 2 2 2 2)
 DATASET_MAX_AGENTS=(4 4 4 4 5 6)
 
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
@@ -67,15 +67,18 @@ MIN_AGENTS="${MIN_AGENTS:-${DATASET_MIN_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 
 # ---- Configuration ----------------------------------------------------------
-HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
+# HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
+HF_MODEL="${HF_MODEL:-meta-llama/Llama-3.2-3B-Instruct}"
+# HF_MODEL="${HF_MODEL:-google/gemma-3-4b-it}"
+
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 NUM_TASKS="${NUM_TASKS:-0}"
 NUM_ITERATIONS="${NUM_ITERATIONS:-10}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
 SEED="${SEED:-42}"
 
@@ -89,7 +92,7 @@ FINETUNE_LR="${FINETUNE_LR:-5e-5}"
 PRUNING_RATIO="${PRUNING_RATIO:-0.25}"
 REPLAY_RATIO="${REPLAY_RATIO:-0.3}"
 
-EVAL_BATCH="${EVAL_BATCH:-4}"
+EVAL_BATCH="${EVAL_BATCH:-16}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
 
@@ -106,7 +109,7 @@ CHECKPOINT_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0} + 10))}"
 VLLM_TP="${VLLM_TP:-2}"                  # tensor-parallel GPUs for the server
-VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_serve}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
 
@@ -117,8 +120,8 @@ _start_vllm_server() {
         --port                   "$VLLM_PORT" \
         --dtype                  float16 \
         --trust-remote-code \
-        --max-model-len          8192 \
-        --gpu-memory-utilization 0.8 \
+        --max-model-len          32768 \
+        --gpu-memory-utilization 0.9 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \
         --chat-template          "$VLLM_CHAT_TEMPLATE") \

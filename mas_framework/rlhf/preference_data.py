@@ -253,41 +253,99 @@ def create_preference_pairs(
 
 class PreferencePairDataset(Dataset):
     """
-    Loads all .pkl shards from a directory and exposes them as a flat dataset
-    of (chosen_pyg, rejected_pyg, task_embedding) triples.
+    Loads all .pkl shards from one or more directories and exposes them as a
+    flat dataset of (chosen_pyg, rejected_pyg, task_embedding) triples.
 
-    Shards are memory-mapped lazily: only the requested shard is unpickled.
+    Pass a list of directories to pool data across multiple datasets (e.g. for
+    training a single global reward model).
     """
 
-    def __init__(self, data_dir: str, exclude_both_wrong: bool = False):
-        self.data_dir = data_dir
-        shard_paths = sorted(
-            os.path.join(data_dir, f)
-            for f in os.listdir(data_dir)
-            if f.endswith(".pkl")
-        )
-        if not shard_paths:
-            raise FileNotFoundError(f"No .pkl shard files found in {data_dir}")
+    def __init__(
+        self,
+        data_dir: "Union[str, List[str]]",
+        exclude_both_wrong: bool = False,
+    ):
+        dirs: List[str] = [data_dir] if isinstance(data_dir, str) else list(data_dir)
+
+        all_shard_paths: List[str] = []
+        for d in dirs:
+            paths = sorted(
+                os.path.join(d, f) for f in os.listdir(d) if f.endswith(".pkl")
+            )
+            if not paths:
+                print(f"  [warn] No .pkl shards found in {d}")
+            all_shard_paths.extend(paths)
+
+        if not all_shard_paths:
+            raise FileNotFoundError(
+                f"No .pkl shard files found in any of: {dirs}"
+            )
 
         # Build flat index: (shard_path, local_idx)
         self._index: List[Tuple[str, int]] = []
         self._shard_cache: Dict[str, List[PreferencePair]] = {}
         n_excluded = 0
 
-        for path in shard_paths:
+        # Stats for logging — per-directory and overall
+        from collections import defaultdict, Counter
+        dir_stats: Dict[str, dict] = {}
+
+        for path in all_shard_paths:
+            d = os.path.dirname(path)
             with open(path, "rb") as f:
                 shard: List[PreferencePair] = pickle.load(f)
             self._shard_cache[path] = shard
+
+            if d not in dir_stats:
+                dir_stats[d] = {
+                    "shards": 0, "pairs": 0, "excluded": 0,
+                    "correct_vs_wrong": 0, "wrong_vs_correct": 0,
+                    "both_correct": 0, "both_wrong": 0,
+                    "domains": Counter(),
+                }
+            s = dir_stats[d]
+            s["shards"] += 1
+
             for i, pair in enumerate(shard):
-                if exclude_both_wrong and not pair.chosen_is_correct and not pair.rejected_is_correct:
+                both_wrong = not pair.chosen_is_correct and not pair.rejected_is_correct
+                if exclude_both_wrong and both_wrong:
                     n_excluded += 1
+                    s["excluded"] += 1
                     continue
                 self._index.append((path, i))
+                s["pairs"] += 1
+                domain = pair.metadata.get("domain", "unknown")
+                s["domains"][domain] += 1
+                if pair.chosen_is_correct and not pair.rejected_is_correct:
+                    s["correct_vs_wrong"] += 1
+                elif not pair.chosen_is_correct and pair.rejected_is_correct:
+                    s["wrong_vs_correct"] += 1
+                elif pair.chosen_is_correct and pair.rejected_is_correct:
+                    s["both_correct"] += 1
+                else:
+                    s["both_wrong"] += 1
 
-        msg = f"PreferencePairDataset: {len(self._index)} pairs from {len(shard_paths)} shards"
-        if exclude_both_wrong and n_excluded:
-            msg += f" ({n_excluded} both-wrong pairs excluded)"
-        print(msg)
+        # ── Logging ────────────────────────────────────────────────────────
+        print("\n  ── Preference pair dataset ─────────────────────────────")
+        total_pairs = len(self._index)
+        for d, s in dir_stats.items():
+            domain_str = "  ".join(f"{k}={v}" for k, v in sorted(s["domains"].items()))
+            print(
+                f"  Dir  : {d}\n"
+                f"         shards={s['shards']}  pairs={s['pairs']}"
+                + (f"  excluded={s['excluded']}" if s["excluded"] else "")
+                + f"\n"
+                f"         correct→wrong={s['correct_vs_wrong']}  "
+                f"wrong→correct={s['wrong_vs_correct']}  "
+                f"both-correct={s['both_correct']}  "
+                f"both-wrong={s['both_wrong']}\n"
+                + (f"         domains: {domain_str}" if domain_str else "")
+            )
+        print(
+            f"  Total: {total_pairs} pairs from {len(all_shard_paths)} shards"
+            + (f"  ({n_excluded} both-wrong excluded)" if n_excluded else "")
+        )
+        print("  ────────────────────────────────────────────────────────\n")
 
     def __len__(self) -> int:
         return len(self._index)

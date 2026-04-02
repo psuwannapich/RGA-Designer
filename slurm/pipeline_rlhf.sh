@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=arg_pipeline_rlhf
-#SBATCH --output=logs/pipeline_rlhf_%A_%a.out
-#SBATCH --error=logs/pipeline_rlhf_%A_%a.err
+#SBATCH --job-name=arg_qwen_rlhf
+#SBATCH --output=logs/qwen_rlhf_%A_%a.out
+#SBATCH --error=logs/qwen_rlhf_%A_%a.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
 #SBATCH --time=2-00:00:00
@@ -69,15 +69,18 @@ MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 
 # ---- Configuration ----------------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
+# HF_MODEL="${HF_MODEL:-meta-llama/Llama-3.2-3B-Instruct}"
+# HF_MODEL="${HF_MODEL:-google/gemma-3-4b-it}"
+
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 SEED="${SEED:-42}"
 
 # Collect
-RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-100}"
+RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-200}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
 MIN_AGENTS="${MIN_AGENTS:-2}"
 W_CORRECT="${W_CORRECT:-0.6}"
@@ -87,7 +90,7 @@ PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-1200}"
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"
-ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"
+ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"         # defaults to MODEL_DIR after derived paths
 COLDSTART_DIRS="${COLDSTART_DIRS:-}"       # user-specified extra dirs
 ARG_MODEL_SAMPLES="${ARG_MODEL_SAMPLES:-}"
 COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
@@ -112,7 +115,7 @@ KL_COEFF="${KL_COEFF:-0.1}"
 SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-2}"
 
 # Benchmark
-EVAL_BATCH="${EVAL_BATCH:-2}"
+EVAL_BATCH="${EVAL_BATCH:-8}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 
 # Derived paths
@@ -122,13 +125,15 @@ POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${DATASET}/policy_
 MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
 COLD_START_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${COLD_START_ROOT}/${DATASET}"
 D_EFF_DIR="$MODEL_DIR/FinetuneData_${DATASET}"
+# Default ARG_MODEL_DIR to the fine-tuned checkpoint for this dataset
+ARG_MODEL_DIR="${ARG_MODEL_DIR:-$MODEL_DIR}"
 
 # ---- vLLM inference server --------------------------------------------------
 # Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
-VLLM_TP="${VLLM_TP:-2}"                  # tensor-parallel GPUs for the server
-VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_serve}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
 
@@ -139,7 +144,7 @@ _start_vllm_server() {
         --port                   "$VLLM_PORT" \
         --dtype                  float16 \
         --trust-remote-code \
-        --max-model-len          8192 \
+        --max-model-len          16384 \
         --gpu-memory-utilization 0.8 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \
@@ -231,9 +236,13 @@ else
         ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
         ${ARG_MODEL_SAMPLES:+--arg_model_samples "$ARG_MODEL_SAMPLES"} \
         $(
-            # Auto-include rlhf_rejected dirs from cold start and finetune
+            # Auto-include accepted (cold-start / D_eff) and rejected graph dirs
             # alongside any user-specified COLDSTART_DIRS.
             _dirs="${COLDSTART_DIRS:-}"
+            # Accepted graphs (correct .pt files in the root data dirs)
+            [[ -d "$COLD_START_DIR" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR"
+            [[ -d "$D_EFF_DIR"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR"
+            # Rejected graphs (saved to rlhf_rejected subdirs)
             [[ -d "$COLD_START_DIR/rlhf_rejected" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR/rlhf_rejected"
             [[ -d "$D_EFF_DIR/rlhf_rejected"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR/rlhf_rejected"
             [[ -n "$_dirs" ]] && echo "--coldstart_dirs $_dirs"

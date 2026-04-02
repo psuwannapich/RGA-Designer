@@ -31,8 +31,11 @@
 # Optional env vars:
 #   HF_MODEL          LLM for inference (default: Qwen/Qwen3-4B)
 #   CHECKPOINT_ROOT   must match Stage 1 value (default: checkpoints)
-#   MODEL_TYPE        must match Stage 1 value: arg_designer | rlhf
-#                     (auto-derived from CHECKPOINT_ROOT if not set)
+#   MODEL_TYPE        graph model type to benchmark; must match the value used
+#                     during graph generation.  For pipeline_rlhf_global_rm.sh
+#                     runs this is "rlhf_global_rm_<RUN_NAME>", e.g.
+#                     MODEL_TYPE=rlhf_global_rm_kl01 sbatch benchmark_pregraph.sh
+#                     (default: rlhf_global_rm_default)
 #   GRAPHS_ROOT       must match Stage 1 value (default: graphs)
 #   RESULTS_ROOT      output sub-dir for results (default: benchmark_results)
 #   EVAL_BATCH        async LLM inference batch size (default: 8)
@@ -42,8 +45,6 @@
 #   VLLM_TP           tensor-parallel GPUs for vLLM (default: 2)
 #   VLLM_SERVE_DIR    directory with vLLM .venv (default: ~/work_space/vllm_temp)
 # ---------------------------------------------------------------------------
-
-MODEL_TYPE=rlhf_global_rm
 
 set -euo pipefail
 
@@ -63,15 +64,19 @@ HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 MODEL_SLUG="${HF_MODEL//\//-}"
 GRAPHS_ROOT="${GRAPHS_ROOT:-graphs}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
-EVAL_BATCH="${EVAL_BATCH:-2}"
+EVAL_BATCH="${EVAL_BATCH:-16}"
 LIMIT="${LIMIT:-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
 MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 
+# MODEL_TYPE identifies which graph set to benchmark.  Pass via env to select
+# a specific pipeline_rlhf_global_rm.sh run: MODEL_TYPE=rlhf_global_rm_<RUN_NAME>
+MODEL_TYPE="${MODEL_TYPE:-rlhf_global_rm_better_split}"
+
 GRAPHS_FILE="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}/${DATASET}_graphs.jsonl"
 RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/${MODEL_TYPE}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_FILE="$RESULTS_DIR/${DATASET}_${TIMESTAMP}.jsonl"
+OUTPUT_FILE="$RESULTS_DIR/${DATASET}.jsonl"
 SUMMARY_LOG="$RESULTS_DIR/summary.jsonl"
 
 mkdir -p "$RESULTS_DIR"
@@ -83,7 +88,7 @@ export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
 VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
-VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
+VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_serve}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
 
@@ -93,7 +98,7 @@ _start_vllm_server() {
         --port                   "$VLLM_PORT" \
         --dtype                  float16 \
         --trust-remote-code \
-        --max-model-len          8192 \
+        --max-model-len          16384 \
         --gpu-memory-utilization 0.8 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \

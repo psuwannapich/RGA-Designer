@@ -12,13 +12,12 @@ import os
 import sys
 import json
 import time
-import math
 import asyncio
 import argparse
 import datetime
 import networkx as nx
 from tqdm import tqdm
-from typing import List, Any, Iterator, Tuple
+from typing import List, Any, Tuple
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -26,7 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from mas_framework.graph.graph import TestGraph
 from mas_framework.utils.globals import Cost, PromptTokens, CompletionTokens
 from experiment.utils import convert_to_pyg_graph
-from experiment.eval_checkpoint import load_checkpoint, log_batch
+from experiment.eval_checkpoint import load_checkpoint
 
 
 # ---------------------------------------------------------------------------
@@ -177,126 +176,101 @@ async def main():
     total_done = len(done_ids)
     _wall_start = time.time()
 
-    def batch_iter(data: List[Any], size: int) -> Iterator[List[Any]]:
-        buf = []
-        for item in data:
-            buf.append(item)
-            if len(buf) >= size:
-                yield buf
-                buf = []
-        if buf:
-            yield buf
-
     def _append_result(out_fh, rec: dict) -> None:
         """Write one result line immediately and flush to disk."""
         out_fh.write(json.dumps(rec) + '\n')
         out_fh.flush()
         os.fsync(out_fh.fileno())
 
-    num_batches = math.ceil(total_tasks / args.eval_batch_size)
-    pbar = tqdm(enumerate(batch_iter(graphs_data, args.eval_batch_size)),
-                total=num_batches, desc=f"Benchmarking [{args.dataset}]")
+    # Semaphore-based sliding window: dispatch the next task as soon as any
+    # slot frees up, instead of waiting for a whole batch to drain.  This
+    # keeps vLLM continuously loaded even when graph sizes vary widely
+    # (e.g. 2-agent graphs finishing much faster than 6-agent ones).
+    sem = asyncio.Semaphore(args.eval_batch_size)
+    pbar = tqdm(total=total_tasks, initial=total_done,
+                desc=f"Benchmarking [{args.dataset}]")
+    # Use a dict so the inner coroutine can update these without nonlocal.
+    counters = {'done': total_done, 'solved': solved_tasks}
 
-    # Open in append mode — results written per-sample survive mid-batch crashes.
-    with open(args.output_file, 'a', encoding='utf-8') as out_fh:
-        for i_batch, batch in pbar:
-            answer_tasks = []
-            metadata = []
-            prep_errors = []
-            _batch_start = time.time()
+    async def run_one(rec, out_fh):
+        task_id = rec['task_id']
+        if task_id in done_ids:
+            return
 
-            for rec in batch:
-                task_id = rec['task_id']
-                if task_id in done_ids:
-                    continue
+        task_text = rec['task_text']
+        true_answer = rec['true_answer']
 
-                task_text = rec['task_text']
-                true_answer = rec['true_answer']
+        try:
+            g = deserialize_graph(rec['graph'])
+            apply_role_constraints(g, role_description)
+            pyg_data = convert_to_pyg_graph(g, task_text)
+            tg = TestGraph(domain=args.dataset, llm_name=args.llm_name,
+                           decision_method=args.decision_method, pyg_data=pyg_data)
+        except Exception as e:
+            print(f"Error preparing {task_id}: {e}")
+            _append_result(out_fh, {
+                'task_id': task_id, 'question': task_text,
+                'true_answer': true_answer, 'predicted_answer': None,
+                'is_solved': False, 'error': str(e),
+                'prompt_tokens': 0, 'completion_tokens': 0,
+            })
+            done_ids.add(str(task_id))
+            counters['done'] += 1
+            pbar.update(1)
+            return
 
-                try:
-                    g = deserialize_graph(rec['graph'])
-                    apply_role_constraints(g, role_description)
-                    pyg_data = convert_to_pyg_graph(g, task_text)
-                    tg = TestGraph(domain=args.dataset, llm_name=args.llm_name,
-                                   decision_method=args.decision_method, pyg_data=pyg_data)
-                    answer_tasks.append(tg.arun({'task': task_text}, num_rounds=1))
-                    metadata.append({
-                        'task_id': task_id,
-                        'task_text': task_text,
-                        'true_answer': true_answer,
-                        'num_nodes': rec.get('num_nodes', g.number_of_nodes()),
-                        'num_edges': rec.get('num_edges', g.number_of_edges()),
-                    })
-                except Exception as e:
-                    print(f"Error preparing {task_id}: {e}")
-                    err_rec = {
-                        'task_id': task_id, 'question': task_text,
-                        'true_answer': true_answer, 'predicted_answer': None,
-                        'is_solved': False, 'error': str(e),
-                    }
-                    _append_result(out_fh, err_rec)
-                    done_ids.add(str(task_id))
-                    total_done += 1
-                    prep_errors.append(err_rec)
-
-            if not answer_tasks:
-                continue
-
-            # Snapshot token counters before running this batch.
+        async with sem:
+            # Token snapshots inside the semaphore give per-task attribution
+            # (approximate when eval_batch_size > 1 since concurrent tasks
+            # share the global counters, but accurate at batch_size=1).
             _pt_before = PromptTokens.instance().value
             _ct_before = CompletionTokens.instance().value
+            try:
+                result = await tg.arun({'task': task_text}, num_rounds=1)
+            except Exception as e:
+                print(f"Error executing {task_id}: {e}")
+                _append_result(out_fh, {
+                    'task_id': task_id, 'question': task_text,
+                    'true_answer': true_answer, 'predicted_answer': None,
+                    'is_solved': False, 'error': str(e),
+                    'prompt_tokens': 0, 'completion_tokens': 0,
+                })
+                done_ids.add(str(task_id))
+                counters['done'] += 1
+                pbar.update(1)
+                return
+            _pt_task = int(PromptTokens.instance().value - _pt_before)
+            _ct_task = int(CompletionTokens.instance().value - _ct_before)
 
-            all_results = await asyncio.gather(*answer_tasks, return_exceptions=True)
+        raw = result[0] if isinstance(result, list) and result else result
+        predicted, is_solved = evaluate_prediction(args.dataset, raw, true_answer)
+        if is_solved:
+            counters['solved'] += 1
 
-            # Distribute batch token usage evenly across tasks in this batch.
-            n_tasks = len(answer_tasks)
-            _pt_batch = PromptTokens.instance().value - _pt_before
-            _ct_batch = CompletionTokens.instance().value - _ct_before
-            _pt_per = int(_pt_batch / n_tasks) if n_tasks else 0
-            _ct_per = int(_ct_batch / n_tasks) if n_tasks else 0
+        _append_result(out_fh, {
+            'task_id': task_id, 'question': task_text,
+            'true_answer': true_answer, 'predicted_answer': predicted,
+            'raw_response': str(raw), 'is_solved': is_solved,
+            'num_nodes': rec.get('num_nodes', g.number_of_nodes()),
+            'num_edges': rec.get('num_edges', g.number_of_edges()),
+            'prompt_tokens': _pt_task, 'completion_tokens': _ct_task,
+        })
+        done_ids.add(str(task_id))
+        counters['done'] += 1
 
-            for i, result in enumerate(all_results):
-                meta = metadata[i]
-                if isinstance(result, Exception):
-                    print(f"Error executing {meta['task_id']}: {result}")
-                    err_rec = {
-                        'task_id': meta['task_id'], 'question': meta['task_text'],
-                        'true_answer': meta['true_answer'], 'predicted_answer': None,
-                        'is_solved': False, 'error': str(result),
-                        'prompt_tokens': _pt_per, 'completion_tokens': _ct_per,
-                    }
-                    _append_result(out_fh, err_rec)
-                    done_ids.add(str(meta['task_id']))
-                    total_done += 1
-                    continue
+        acc = counters['solved'] / counters['done'] * 100 if counters['done'] else 0
+        pbar.set_postfix({
+            'Accuracy': f"{acc:.2f}% ({counters['solved']}/{counters['done']})",
+            'Tokens': f"${PromptTokens.instance().value:.4f}",
+        })
+        pbar.update(1)
 
-                raw = result[0] if isinstance(result, list) and result else result
-                predicted, is_solved = evaluate_prediction(args.dataset, raw, meta['true_answer'])
-                if is_solved:
-                    solved_tasks += 1
-                res_rec = {
-                    'task_id': meta['task_id'],
-                    'question': meta['task_text'],
-                    'true_answer': meta['true_answer'],
-                    'predicted_answer': predicted,
-                    'raw_response': str(raw),
-                    'is_solved': is_solved,
-                    'num_nodes': meta['num_nodes'],
-                    'num_edges': meta['num_edges'],
-                    'prompt_tokens': _pt_per,
-                    'completion_tokens': _ct_per,
-                }
-                _append_result(out_fh, res_rec)
-                done_ids.add(str(meta['task_id']))
-                total_done += 1
+    with open(args.output_file, 'a', encoding='utf-8') as out_fh:
+        await asyncio.gather(*(run_one(rec, out_fh) for rec in graphs_data))
 
-            acc = solved_tasks / total_done * 100 if total_done else 0
-            pbar.set_postfix({
-                'Accuracy': f'{acc:.2f}% ({solved_tasks}/{total_done})',
-                'Tokens': f'${PromptTokens.instance().value:.4f}',
-            })
-            log_batch(i_batch, num_batches, solved_tasks, total_done, total_tasks,
-                      time.time() - _batch_start, _wall_start)
+    pbar.close()
+    solved_tasks = counters['solved']
+    total_done = counters['done']
 
     pass_at_1 = solved_tasks / total_done * 100 if total_done > 0 else 0
     final_cost = Cost.instance().value

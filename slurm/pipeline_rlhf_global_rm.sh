@@ -33,9 +33,16 @@
 #   POLICY_NUM_TASKS   tasks to sample for policy train  (default: 200)
 #   EVAL_BATCH         benchmark batch size              (default: 2)
 #   RESULTS_ROOT       results sub-dir                  (default: benchmark_results)
+#   RUN_NAME           unique name for this run; namespaces policy checkpoints,
+#                      graphs, state flags, and global RM so re-runs with
+#                      different settings never overwrite each other.
+#                      (default: "default")
+#                      Example: RUN_NAME=kl01_ep30 sbatch pipeline_rlhf_global_rm.sh
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
+
+RUN_NAME=better_split
 
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 mkdir -p "$PROJECT_ROOT/logs"
@@ -71,6 +78,11 @@ export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 SEED="${SEED:-42}"
 
+# Run name — used to namespace all mutable outputs so different settings
+# can coexist under the same MODEL_SLUG without overwriting each other.
+RUN_NAME="${RUN_NAME:-default}"
+MODEL_TYPE="rlhf_global_rm_${RUN_NAME}"
+
 # Reward model
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
 RM_ROOT="${RM_ROOT:-rlhf_checkpoints}"
@@ -98,8 +110,8 @@ GRAPHS_ROOT="${GRAPHS_ROOT:-graphs}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
 
-# Global reward model checkpoint (shared across all datasets)
-GLOBAL_RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/global/reward_model.pth"
+# Global reward model checkpoint (namespaced by RUN_NAME)
+GLOBAL_RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/global_${RUN_NAME}/reward_model.pth"
 
 # ---- vLLM inference server --------------------------------------------------
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
@@ -109,8 +121,8 @@ VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_tem
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
 
-# ---- Stage checkpointing ----------------------------------------------------
-STATE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/state/rlhf_global"
+# ---- Stage checkpointing (namespaced by RUN_NAME) ---------------------------
+STATE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/state/rlhf_global_${RUN_NAME}"
 mkdir -p "$STATE_DIR"
 
 stage_done() { [[ -f "$STATE_DIR/$1.done" ]]; }
@@ -123,6 +135,8 @@ echo "  Job              : $SLURM_JOB_ID"
 echo "  Node             : $SLURM_NODELIST"
 echo "  Model            : $HF_MODEL  (slug: $MODEL_SLUG)"
 echo "  Datasets         : ${DATASETS[*]}"
+echo "  Run name         : $RUN_NAME"
+echo "  Model type       : $MODEL_TYPE"
 echo "  Global RM        : $GLOBAL_RM_CHECKPOINT"
 echo "  Policy root      : ${MODEL_SLUG}/${POLICY_ROOT}/<dataset>"
 echo "  RM epochs        : $RM_EPOCHS"
@@ -186,9 +200,9 @@ for i in "${!DATASETS[@]}"; do
     TASK_SPLIT_RAW="${TASK_SPLIT_PATHS[$i]}"
 
     MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DATASET}"
-    POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${DATASET}/policy_rlhf_global_rm.pth"
+    POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${RUN_NAME}/${DATASET}/policy_rlhf_global_rm.pth"
     POLICY_DIR="$(dirname "$POLICY_CHECKPOINT")"
-    GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/rlhf_global_rm"
+    GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}"
     GRAPHS_FILE="$GRAPHS_DIR/${DATASET}_graphs.jsonl"
 
     echo ""
@@ -242,7 +256,7 @@ for i in "${!DATASETS[@]}"; do
             --dataset      "$DATASET" \
             --dataset_path "$DATASET_JSON" \
             --output_file  "$GRAPHS_FILE" \
-            --model_type   rlhf_global_rm \
+            --model_type   "$MODEL_TYPE" \
             ${TASK_SPLIT_RAW:+--task_split_path "$PROJECT_ROOT/$TASK_SPLIT_RAW"} \
             ${LIMIT:+--limit "$LIMIT"} \
             $NO_EF_FLAG
@@ -255,7 +269,9 @@ done
 echo ""
 echo "════════════════════════════════════════════════"
 echo "  Global RLHF pipeline complete"
+echo "  Run name   : $RUN_NAME"
 echo "  Global RM  : $GLOBAL_RM_CHECKPOINT"
-echo "  Results    : ${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf_global/summary.jsonl"
+echo "  Graphs     : ${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}/"
+echo "  To benchmark: MODEL_TYPE=$MODEL_TYPE sbatch slurm/benchmark_pregraph.sh"
 echo "  Finished   : $(date)"
 echo "════════════════════════════════════════════════"

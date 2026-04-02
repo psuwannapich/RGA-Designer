@@ -110,7 +110,7 @@ _start_vllm_server() {
         --port                   "$VLLM_PORT" \
         --dtype                  float16 \
         --trust-remote-code \
-        --max-model-len          8192 \
+        --max-model-len          16384 \
         --gpu-memory-utilization 0.8 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \

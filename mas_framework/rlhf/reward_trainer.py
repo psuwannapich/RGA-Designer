@@ -21,7 +21,7 @@ from mas_framework.rlhf.reward_model import GraphRewardModel
 
 def train_reward_model(
     model: GraphRewardModel,
-    data_dir: str,
+    data_dir: "Union[str, list]",
     device: torch.device,
     epochs: int = 20,
     lr: float = 1e-4,
