@@ -254,8 +254,9 @@ class RLHFPolicyTrainer:
         self,
         task_records: List[Dict[str, Any]],
         epochs: int = 10,
-        samples_per_task: int = 2,
+        samples_per_task: int = 4,
         save_path: Optional[str] = None,
+        grad_accum_steps: int = 8,
     ):
         """
         Main GRPO training loop.
@@ -265,14 +266,17 @@ class RLHFPolicyTrainer:
           - Score each with the reward model
           - Compute within-group advantages: A_i = (r_i - mean) / std
           - Also compute reference log-probs for KL penalty
-          - Update policy via GRPO loss
+          - Accumulate gradients over *grad_accum_steps* tasks, then update
 
         Parameters
         ----------
-        task_records     : list of {'task': str, 'task_embedding': np.ndarray}
-        epochs           : number of full passes over task_records
-        samples_per_task : graphs sampled per task per step (≥2 required for std)
-        save_path        : path to save policy checkpoint after each epoch
+        task_records      : list of {'task': str, 'task_embedding': np.ndarray}
+        epochs            : number of full passes over task_records
+        samples_per_task  : graphs sampled per task per step (≥2 required for std;
+                            ≥4 recommended so advantage magnitude encodes reward gap)
+        save_path         : path to save policy checkpoint after each epoch
+        grad_accum_steps  : number of tasks to accumulate gradients over before
+                            calling optimizer.step() (reduces per-step variance)
         """
         from sentence_transformers import SentenceTransformer
         sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
@@ -283,7 +287,11 @@ class RLHFPolicyTrainer:
         for epoch in range(1, epochs + 1):
             epoch_losses, epoch_rewards = [], []
 
-            for record in tqdm(task_records, desc=f"Policy epoch {epoch}/{epochs}"):
+            # Gradient accumulation state — reset at the start of each epoch.
+            self.optimizer.zero_grad()
+            accum_count = 0
+
+            for task_idx, record in enumerate(tqdm(task_records, desc=f"Policy epoch {epoch}/{epochs}")):
                 # Task embedding
                 task_text = record["task"]
                 if "task_embedding" in record:
@@ -312,13 +320,12 @@ class RLHFPolicyTrainer:
                     sample_kls.append(kl)
 
                 # GRPO: normalise within the group (per-task mean and std).
-                # This removes the reward model's arbitrary absolute offset and
-                # scale so that gradient magnitudes are stable regardless of
-                # how the reward model is calibrated.
-                rewards_tensor = torch.stack(sample_rewards)        # [G]
+                # Clamp std from below at 0.01 so near-identical rewards produce
+                # proportionally small advantages rather than full-strength gradients.
+                rewards_tensor = torch.stack(sample_rewards)                       # [G]
                 group_mean = rewards_tensor.mean()
-                group_std = rewards_tensor.std() + 1e-8             # unbiased std
-                advantages = (rewards_tensor - group_mean) / group_std  # [G]
+                group_std  = torch.clamp(rewards_tensor.std(), min=0.01)           # [fix2]
+                advantages  = (rewards_tensor - group_mean) / group_std            # [G]
 
                 # Log raw rewards for monitoring (advantages always average to 0).
                 for r in sample_rewards:
@@ -331,12 +338,21 @@ class RLHFPolicyTrainer:
                     step_losses.append(loss)
 
                 if step_losses:
-                    total_loss = torch.stack(step_losses).mean()
-                    self.optimizer.zero_grad()
-                    total_loss.backward()
+                    # Divide by grad_accum_steps so the effective loss magnitude
+                    # is independent of how many tasks are accumulated.
+                    task_loss = torch.stack(step_losses).mean() / grad_accum_steps
+                    task_loss.backward()                                            # [fix1]
+                    epoch_losses.append(task_loss.item() * grad_accum_steps)
+                    accum_count += 1
+
+                # Step the optimizer every grad_accum_steps tasks, or at the end
+                # of the epoch so no gradients are silently discarded.
+                is_last_task = (task_idx + 1) == len(task_records)
+                if accum_count > 0 and (accum_count % grad_accum_steps == 0 or is_last_task):
                     nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
                     self.optimizer.step()
-                    epoch_losses.append(total_loss.item())
+                    self.optimizer.zero_grad()
+                    accum_count = 0
 
             avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
             avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0

@@ -23,7 +23,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from mas_framework.graph.graph import TestGraph
-from mas_framework.utils.globals import Cost, PromptTokens, CompletionTokens
+from mas_framework.utils.globals import (
+    Cost, PromptTokens, CompletionTokens,
+    task_prompt_tokens, task_completion_tokens,
+)
 from experiment.utils import convert_to_pyg_graph
 from experiment.eval_checkpoint import load_checkpoint
 
@@ -200,6 +203,13 @@ async def main():
         task_text = rec['task_text']
         true_answer = rec['true_answer']
 
+        # Reset task-local counters.  Because run_one is scheduled as an
+        # asyncio Task by gather(), each invocation has its own ContextVar
+        # copy, so this set() only affects the current task — concurrent
+        # tasks are unaffected.
+        task_prompt_tokens.set(0)
+        task_completion_tokens.set(0)
+
         try:
             g = deserialize_graph(rec['graph'])
             apply_role_constraints(g, role_description)
@@ -220,11 +230,6 @@ async def main():
             return
 
         async with sem:
-            # Token snapshots inside the semaphore give per-task attribution
-            # (approximate when eval_batch_size > 1 since concurrent tasks
-            # share the global counters, but accurate at batch_size=1).
-            _pt_before = PromptTokens.instance().value
-            _ct_before = CompletionTokens.instance().value
             try:
                 result = await tg.arun({'task': task_text}, num_rounds=1)
             except Exception as e:
@@ -239,8 +244,10 @@ async def main():
                 counters['done'] += 1
                 pbar.update(1)
                 return
-            _pt_task = int(PromptTokens.instance().value - _pt_before)
-            _ct_task = int(CompletionTokens.instance().value - _ct_before)
+
+        # Read task-local counters — accurate regardless of eval_batch_size.
+        _pt_task = task_prompt_tokens.get()
+        _ct_task = task_completion_tokens.get()
 
         raw = result[0] if isinstance(result, list) and result else result
         predicted, is_solved = evaluate_prediction(args.dataset, raw, true_answer)

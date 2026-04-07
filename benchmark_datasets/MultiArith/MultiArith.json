@@ -7657,10 +7657,10 @@
             125
         ],
         "lEquations": [
-            "X=((41.0-11.0)/6.0)"
+            "X=((41.0-11.0)/6.0)+1.0"
         ],
         "lSolutions": [
-            5.0
+            6.0
         ],
         "sQuestion": " Paige's team won their dodgeball game and scored 41 points total. If Paige scored 11 of the points and everyone else scored 6 points each, how many players were on her team? "
     },
@@ -7987,10 +7987,10 @@
             125
         ],
         "lEquations": [
-            "X=((39.0-23.0)/2.0)"
+            "X=((39.0-23.0)/2.0)+1.0"
         ],
         "lSolutions": [
-            8.0
+            9.0
         ],
         "sQuestion": " Emily's team won their dodgeball game and scored 39 points total. If Emily scored 23 of the points and everyone else scored 2 points each, how many players were on her team? "
     },
@@ -8317,10 +8317,10 @@
             124
         ],
         "lEquations": [
-            "X=((12.0-4.0)/4.0)"
+            "X=((12.0-4.0)/4.0)+1.0"
         ],
         "lSolutions": [
-            2.0
+            3.0
         ],
         "sQuestion": " Katie's team won their dodgeball game and scored 12 points total. If Katie scored 4 of the points and everyone else scored 4 points each, how many players were on her team? "
     },
@@ -8722,10 +8722,10 @@
             127
         ],
         "lEquations": [
-            "X=((75.0-45.0)/6.0)"
+            "X=((75.0-45.0)/6.0)+1.0"
         ],
         "lSolutions": [
-            5.0
+            6.0
         ],
         "sQuestion": " Bianca's team won their dodgeball game and scored 75 points total. If Bianca scored 45 of the points and everyone else scored 6 points each, how many players were on her team? "
     },

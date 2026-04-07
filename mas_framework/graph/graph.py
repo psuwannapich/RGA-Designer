@@ -520,7 +520,6 @@ class TestGraph(ABC):
             in_degree = {node_id: len(node.spatial_predecessors) for node_id, node in self.nodes.items()}
             zero_in_degree_queue = [node_id for node_id, deg in in_degree.items() if
                                     deg == 0]
-
             while zero_in_degree_queue:
                 current_node_id = zero_in_degree_queue.pop(0)
                 tries = 0
@@ -537,7 +536,6 @@ class TestGraph(ABC):
                     in_degree[successor.id] -= 1
                     if in_degree[successor.id] == 0:
                         zero_in_degree_queue.append(successor.id)
-
             self.update_memory()
 
         self.connect_decision_node()

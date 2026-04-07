@@ -2,18 +2,25 @@
 Serialisable data structures for RLHF preference pairs.
 
 PreferencePair stores two graph results for the same task together with a
-composite score derived from correctness, graph size, and estimated token cost.
+composite score derived from correctness, graph size, and edge density.
 These are written to .pkl shards and loaded by PreferencePairDataset.
 
 Preference score formula
 ------------------------
 score = w_correct * float(is_correct)
-      - w_size    * (num_nodes / ref_max_nodes)
-      - w_token   * log1p(estimated_tokens / ref_token_scale) / log1p(1)
+      + w_size    * (1 - num_nodes / ref_max_nodes)
+      + w_edge    * edge_term
+
+edge_term = 1 - (num_edges - min_edges) / (max_dag_edges - min_edges)
+  where min_edges     = num_nodes - 1   (chain / spanning-tree topology)
+        max_dag_edges = num_nodes * (num_nodes - 1) / 2
+
+edge_term = 1.0 when num_edges == num_nodes - 1  (sparse, gets full credit)
+edge_term = 0.0 when num_edges == max_dag_edges  (fully connected, no credit)
 
 All three terms are bounded to [0, 1] before weighting.
-The correctness term dominates by default (weight 0.6) while size and token
-penalties gently prefer cheaper graphs when correctness is equal.
+The correctness term dominates by default (weight 0.6) while size and edge
+penalties gently prefer simpler graphs when correctness is equal.
 """
 
 from __future__ import annotations
@@ -117,40 +124,47 @@ class PreferenceWeights:
     """Relative importance of each preference signal."""
     correctness: float = 0.6
     graph_size: float = 0.2
-    token_cost: float = 0.2
+    edge_cost: float = 0.2
 
     # Reference values for normalisation
     ref_max_nodes: int = 6
-    ref_token_scale: int = 2000   # tokens at which the penalty is ~0.5
 
 
 def compute_preference_score(
     is_correct: bool,
     num_nodes: int,
-    estimated_tokens: int,
+    num_edges: int,
     weights: Optional[PreferenceWeights] = None,
 ) -> float:
     """
     Compute a scalar preference score in [0, 1].
 
     correctness_term  = float(is_correct)                              ∈ {0, 1}
-    size_term         = max(0, 1 - num_nodes / ref_max_nodes)         ∈ [0, 1]
-    token_term        = 1 / (1 + log1p(tokens / ref_token_scale))     ∈ (0, 1]
+    size_term         = max(0, 1 - (num_nodes-1) / (ref_max_nodes-1))  ∈ [0, 1]
+    edge_term         = 1 - (num_edges - min_edges) / (max_dag_edges - min_edges)
+                        clamped to [0, 1]
+                        where min_edges = num_nodes - 1
+                              max_dag_edges = num_nodes * (num_nodes - 1) / 2
     """
     if weights is None:
         weights = PreferenceWeights()
 
     correctness_term = 1.0 if is_correct else 0.0
 
-    size_term = max(0.0, 1.0 - num_nodes / max(weights.ref_max_nodes, 1))
+    size_term = max(0.0, 1.0 - (num_nodes - 1) / max(weights.ref_max_nodes - 1, 1))
 
-    token_scale = max(weights.ref_token_scale, 1)
-    token_term = 1.0 / (1.0 + math.log1p(estimated_tokens / token_scale))
+    min_edges = max(num_nodes - 1, 0)
+    max_dag_edges = num_nodes * (num_nodes - 1) // 2
+    if max_dag_edges <= min_edges:
+        edge_term = 1.0
+    else:
+        edge_term = 1.0 - (num_edges - min_edges) / (max_dag_edges - min_edges)
+        edge_term = max(0.0, min(1.0, edge_term))
 
     return (
         weights.correctness * correctness_term
         + weights.graph_size * size_term
-        + weights.token_cost * token_term
+        + weights.edge_cost * edge_term
     )
 
 
@@ -179,8 +193,8 @@ class PreferencePair:
 
     chosen_num_nodes: int
     rejected_num_nodes: int
-    chosen_estimated_tokens: int
-    rejected_estimated_tokens: int
+    chosen_num_edges: int
+    rejected_num_edges: int
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -206,7 +220,7 @@ def create_preference_pairs(
 
     Each dict must have keys:
       graph_snapshot, task_question, task_embedding,
-      is_correct, num_nodes, estimated_tokens
+      is_correct, num_nodes, num_edges
     Pairs are only kept when score_chosen − score_rejected ≥ margin.
     """
     if weights is None:
@@ -214,7 +228,7 @@ def create_preference_pairs(
 
     scored = [
         (r, compute_preference_score(
-            r["is_correct"], r["num_nodes"], r["estimated_tokens"], weights
+            r["is_correct"], r["num_nodes"], r["num_edges"], weights
         ))
         for r in results
     ]
@@ -236,8 +250,8 @@ def create_preference_pairs(
                     rejected_is_correct=r_b["is_correct"],
                     chosen_num_nodes=r_a["num_nodes"],
                     rejected_num_nodes=r_b["num_nodes"],
-                    chosen_estimated_tokens=r_a["estimated_tokens"],
-                    rejected_estimated_tokens=r_b["estimated_tokens"],
+                    chosen_num_edges=r_a["num_edges"],
+                    rejected_num_edges=r_b["num_edges"],
                     metadata={
                         "chosen_mode": r_a.get("mode", ""),
                         "rejected_mode": r_b.get("mode", ""),

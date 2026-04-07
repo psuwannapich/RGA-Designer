@@ -198,7 +198,7 @@ async def _collect(args):
     weights = PreferenceWeights(
         correctness=args.w_correct,
         graph_size=args.w_size,
-        token_cost=args.w_token,
+        edge_cost=args.w_edge,
     )
 
     arg_model = None
@@ -223,6 +223,7 @@ async def _collect(args):
         arg_model=arg_model,
         sample_temperatures=args.sample_temperatures,
         arg_model_samples=args.arg_model_samples,
+        pruning_ratio=args.pruning_ratio,
     )
 
     coldstart_pool = None
@@ -237,7 +238,8 @@ async def _collect(args):
         max_agents=args.max_agents,
         checkpoint_every=args.checkpoint_every,
         coldstart_pool=coldstart_pool,
-        num_sample_for_tasks=num_sample_for_tasks
+        num_sample_for_tasks=num_sample_for_tasks,
+        task_concurrency=args.task_concurrency,
     )
     print(f"\nCollect phase complete. Total preference pairs: {total}")
 
@@ -334,6 +336,7 @@ def _train_policy(args):
         epochs=args.policy_epochs,
         samples_per_task=args.samples_per_task,
         save_path=args.policy_checkpoint,
+        grad_accum_steps=args.grad_accum_steps,
     )
 
     # Save benchmark-compatible checkpoint (ef_best_model.pth) so that
@@ -384,11 +387,17 @@ def parse_args():
                    help="Correctness weight in preference score")
     p.add_argument("--w_size", type=float, default=0.2,
                    help="Graph size penalty weight")
-    p.add_argument("--w_token", type=float, default=0.2,
-                   help="Token cost penalty weight")
+    p.add_argument("--w_edge", type=float, default=0.2,
+                   help="Edge density penalty weight")
     p.add_argument("--pair_margin", type=float, default=0.05,
                    help="Minimum score gap to keep a preference pair")
+    p.add_argument("--pruning_ratio", type=float, default=0.25,
+                   help="Fraction of edges to remove from correct graphs during collect; "
+                        "pruned variants are added to the preference pool (default: 0.25, "
+                        "set to 0 to disable)")
     p.add_argument("--checkpoint_every", type=int, default=20)
+    p.add_argument("--task_concurrency", type=int, default=4,
+                   help="Number of tasks whose LLM inference runs concurrently during collect")
     p.add_argument("--llm_timeout", type=int, default=600,
                    help="Seconds to wait for a single LLM graph run (default: 600)")
     p.add_argument("--arg_model_dir", default=None,
@@ -432,7 +441,12 @@ def parse_args():
     p.add_argument("--policy_epochs", type=int, default=10)
     p.add_argument("--policy_lr", type=float, default=1e-5)
     p.add_argument("--kl_coeff", type=float, default=0.1)
-    p.add_argument("--samples_per_task", type=int, default=2)
+    p.add_argument("--samples_per_task", type=int, default=4,
+                   help="Graphs sampled per task per GRPO step; ≥4 recommended so "
+                        "within-group advantage magnitude encodes reward differences")
+    p.add_argument("--grad_accum_steps", type=int, default=8,
+                   help="Accumulate gradients over this many tasks before each "
+                        "optimizer.step() — reduces per-step variance (default: 8)")
 
     args = p.parse_args()
 

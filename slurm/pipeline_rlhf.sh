@@ -74,19 +74,20 @@ HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 
 MODEL_SLUG="${HF_MODEL//\//-}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
 export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 SEED="${SEED:-42}"
 
 # Collect
-RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-200}"
+RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-100}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
 MIN_AGENTS="${MIN_AGENTS:-2}"
 W_CORRECT="${W_CORRECT:-0.6}"
 W_SIZE="${W_SIZE:-0.2}"
 W_TOKEN="${W_TOKEN:-0.2}"
 PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
+PRUNING_RATIO="${PRUNING_RATIO:-0.25}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-1200}"
 SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"
@@ -145,7 +146,7 @@ _start_vllm_server() {
         --dtype                  float16 \
         --trust-remote-code \
         --max-model-len          16384 \
-        --gpu-memory-utilization 0.8 \
+        --gpu-memory-utilization 0.9 \
         --tensor-parallel-size   "$VLLM_TP" \
         --enforce-eager \
         --chat-template          "$VLLM_CHAT_TEMPLATE") \
@@ -229,6 +230,7 @@ else
         --w_size             "$W_SIZE" \
         --w_token            "$W_TOKEN" \
         --pair_margin        "$PAIR_MARGIN" \
+        --pruning_ratio      "$PRUNING_RATIO" \
         --checkpoint_every   "$CHECKPOINT_EVERY" \
         --llm_timeout        "$LLM_TIMEOUT" \
         --seed               "$SEED" \

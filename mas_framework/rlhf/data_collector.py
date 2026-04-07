@@ -35,7 +35,6 @@ from mas_framework.rlhf.preference_data import (
     PreferenceWeights,
     create_preference_pairs,
 )
-from mas_framework.rlhf.token_estimator import estimate_tokens
 from experiment.utils import get_kwargs, generate_graph, convert_to_pyg_graph
 
 
@@ -63,6 +62,26 @@ def _default_configs(
 # the role/edge distributions to encourage structural diversity, analogous
 # to temperature sampling in autoregressive LLMs.
 DEFAULT_SAMPLE_TEMPERATURES: List[float] = [1.0, 1.5, 2.0]
+
+
+def _prune_graph(nx_g: nx.DiGraph, pruning_ratio: float) -> nx.DiGraph:
+    """Remove a random fraction of edges, reconnecting any isolated components."""
+    g = copy.deepcopy(nx_g)
+    n_remove = int(g.number_of_edges() * pruning_ratio)
+    if n_remove > 0:
+        edges = list(g.edges())
+        random.shuffle(edges)
+        g.remove_edges_from(edges[:n_remove])
+        if not nx.is_weakly_connected(g):
+            comps = list(nx.weakly_connected_components(g))
+            main = max(comps, key=len)
+            for c in comps:
+                if c != main:
+                    g.add_edge(
+                        random.choice(list(c)),
+                        random.choice(list(main)),
+                    )
+    return g
 
 
 def _graph_fingerprint(nx_g: nx.DiGraph) -> tuple:
@@ -107,6 +126,7 @@ class RLHFDataCollector:
         arg_model=None,
         sample_temperatures: Optional[List[float]] = None,
         arg_model_samples: Optional[int] = None,
+        pruning_ratio: float = 0.0,
     ):
         self.domain = domain
         self.llm_name = llm_name
@@ -128,6 +148,10 @@ class RLHFDataCollector:
         # None = auto: len(temperatures) when _default_configs also runs,
         #              len(temperatures)*3 when _default_configs is skipped.
         self.arg_model_samples = arg_model_samples
+        # Edge pruning ratio: if > 0, each correct graph is also run after
+        # removing this fraction of its edges, injecting pruned variants into
+        # the preference pool for additional diversity.
+        self.pruning_ratio = pruning_ratio
 
         self._sentence_model = None   # lazy-loaded once
 
@@ -208,7 +232,7 @@ class RLHFDataCollector:
             "graph_snapshot": GraphSnapshot.from_nx(nx_g),
             "is_correct": is_correct,
             "num_nodes": num_nodes,
-            "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
+            "num_edges": nx_g.number_of_edges(),
             "mode": mode,
             "domain": self.domain,
         }
@@ -262,7 +286,7 @@ class RLHFDataCollector:
             "graph_snapshot": GraphSnapshot.from_nx(nx_g),
             "is_correct": is_correct,
             "num_nodes": nx_g.number_of_nodes(),
-            "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
+            "num_edges": nx_g.number_of_edges(),
             "mode": label,
             "domain": self.domain,
         }
@@ -311,14 +335,14 @@ class RLHFDataCollector:
                         role = nx_g.nodes[n].get("role", "Unknown")
                         nx_g.nodes[n]["role_embedding"] = sent_model.encode(role)
                 raw_results.append({
-                    "task_question":    record["task"],
-                    "task_embedding":   task_embedding,
-                    "graph_snapshot":   GraphSnapshot.from_nx(nx_g),
-                    "is_correct":       r["is_correct"],
-                    "num_nodes":        r["num_nodes"],
-                    "estimated_tokens": estimate_tokens(nx_g, self.num_rounds),
-                    "mode":             r.get("mode", "coldstart"),
-                    "domain":           self.domain,
+                    "task_question":  record["task"],
+                    "task_embedding": task_embedding,
+                    "graph_snapshot": GraphSnapshot.from_nx(nx_g),
+                    "is_correct":     r["is_correct"],
+                    "num_nodes":      r["num_nodes"],
+                    "num_edges":      nx_g.number_of_edges(),
+                    "mode":           r.get("mode", "coldstart"),
+                    "domain":         self.domain,
                 })
 
         # --- Default topology grid (fallback only) ---
@@ -342,16 +366,25 @@ class RLHFDataCollector:
                     print(f"  [skip build] {mode}-{n}: {type(e).__name__}: {e}")
                     traceback.print_exc()
 
-            # Run sequentially — local HF models queue up under concurrency.
-            for g, m, n in graph_runs:
-                result = await self._run_graph(g, record, m, n, task_embedding)
-                raw_results.append(result)
+            # Run all topology configs concurrently — vLLM handles batching.
+            default_results = await asyncio.gather(
+                *(self._run_graph(g, record, m, n, task_embedding)
+                  for g, m, n in graph_runs),
+                return_exceptions=True,
+            )
+            for r in default_results:
+                if not isinstance(r, Exception):
+                    raw_results.append(r)
 
         # --- ARGDesigner model-based candidates (temperature cycling) ---
         # When _default_configs is disabled, generate more samples to compensate.
         # Temperatures are cycled so we get structural diversity even when
         # n_samples > len(temperatures).  seen_fps is pre-seeded with coldstart
         # fingerprints so no duplicate of an existing graph is ever run.
+        #
+        # Graph *generation* is synchronous CPU work (ARGDesigner forward pass),
+        # so we collect all unique structures first, then run LLM inference
+        # for all of them concurrently.
         if self.arg_model is not None:
             n_samples = self.arg_model_samples
             if n_samples is None:
@@ -363,12 +396,12 @@ class RLHFDataCollector:
                 task_embedding, device=self.arg_model.args.device
             ).float()
 
-            generated = 0
-            max_attempts = n_samples * 4   # allow retries for deduplication
+            # Phase A — collect unique graph structures (no I/O, all synchronous).
+            unique_arg_graphs: List[Tuple] = []   # (nx_g, label)
+            max_attempts = n_samples * 4
             temp_cycle = itertools.cycle(self.sample_temperatures)
-
             for _ in range(max_attempts):
-                if generated >= n_samples:
+                if len(unique_arg_graphs) >= n_samples:
                     break
                 temp = next(temp_cycle)
                 try:
@@ -382,17 +415,47 @@ class RLHFDataCollector:
                     if fp in seen_fps:
                         continue
                     seen_fps.add(fp)
-                    result = await self._run_nx_graph(
-                        graphs[0], record, f"arg_model_T{temp:.2f}", task_embedding
-                    )
-                    raw_results.append(result)
-                    generated += 1
+                    unique_arg_graphs.append((graphs[0], f"arg_model_T{temp:.2f}"))
                 except Exception as e:
                     print(f"  [skip arg_model T={temp}] {type(e).__name__}: {e}")
 
-            if generated < n_samples:
+            if len(unique_arg_graphs) < n_samples:
                 print(f"  [warn] ARGDesigner: requested {n_samples} unique graphs, "
-                      f"got {generated} after {max_attempts} attempts")
+                      f"got {len(unique_arg_graphs)} after {max_attempts} attempts")
+
+            # Phase B — run all unique graphs concurrently.
+            arg_results = await asyncio.gather(
+                *(self._run_nx_graph(g, record, label, task_embedding)
+                  for g, label in unique_arg_graphs),
+                return_exceptions=True,
+            )
+            for r in arg_results:
+                if r is not None and not isinstance(r, Exception):
+                    raw_results.append(r)
+
+        # --- Pruning phase: run edge-pruned variants of every correct graph ---
+        # Pruned graph structures are derived synchronously first (CPU-only),
+        # then all LLM inferences are dispatched concurrently.
+        if self.pruning_ratio > 0:
+            correct_so_far = [r for r in raw_results if isinstance(r, dict) and r["is_correct"]]
+            to_prune: List[Tuple] = []   # (pruned_nx_g, label)
+            for r in correct_so_far:
+                pruned_g = _prune_graph(r["graph_snapshot"].to_nx(), self.pruning_ratio)
+                fp = _graph_fingerprint(pruned_g)
+                if fp in seen_fps:
+                    continue
+                seen_fps.add(fp)
+                to_prune.append((pruned_g, f"pruned_{r['mode']}"))
+
+            if to_prune:
+                pruned_results = await asyncio.gather(
+                    *(self._run_nx_graph(g, record, label, task_embedding)
+                      for g, label in to_prune),
+                    return_exceptions=True,
+                )
+                for r in pruned_results:
+                    if r is not None and not isinstance(r, Exception):
+                        raw_results.append(r)
 
         results = [r for r in raw_results if isinstance(r, dict)]
         skipped = len(raw_results) - len(results)
@@ -424,6 +487,7 @@ class RLHFDataCollector:
         checkpoint_every: int = 20,
         coldstart_pool: Optional[Dict[str, List[Dict]]] = None,
         num_sample_for_tasks: int = 1,
+        task_concurrency: int = 4,
     ) -> int:
         """
         Collect preference pairs for all tasks, writing .pkl shards to
@@ -434,33 +498,62 @@ class RLHFDataCollector:
         are injected into the same pairing pool as the LLM-collected graphs,
         enabling cross-source preference pairs for the same task.
 
+        task_concurrency controls how many tasks run concurrently.  Each task
+        already issues multiple concurrent LLM requests internally, so this
+        multiplies the vLLM throughput without overwhelming the server.
+
         Returns the total number of preference pairs collected.
         """
         os.makedirs(output_dir, exist_ok=True)
+
+        # Semaphore limits how many tasks run their LLM inference in parallel.
+        sem = asyncio.Semaphore(task_concurrency)
+        progress = tqdm(total=len(task_records), desc="RLHF collection")
+
+        async def _run_one(record: Dict[str, Any]) -> Tuple[List[PreferencePair], dict]:
+            async with sem:
+                extra = (coldstart_pool or {}).get(record["task"], [])
+                result = await self.collect_for_task(
+                    record, min_agents, max_agents,
+                    extra_results=extra or None,
+                    num_sample_for_tasks=num_sample_for_tasks,
+                )
+            progress.update(1)
+            return result
+
+        # Dispatch all tasks concurrently; results arrive in original order.
+        all_results = await asyncio.gather(
+            *[_run_one(r) for r in task_records],
+            return_exceptions=True,
+        )
+        progress.close()
+
+        # Process results in order so sharding mirrors checkpoint_every grouping.
         shard_idx  = 0
         buffer: List[PreferencePair] = []
         total_pairs = 0
+        cum_total = cum_correct = cum_incorrect = cum_skipped = 0
 
-        # Cumulative graph-level counters across all tasks
-        cum_total     = 0
-        cum_correct   = 0
-        cum_incorrect = 0
-        cum_skipped   = 0
+        for i, result in enumerate(all_results):
+            if isinstance(result, Exception):
+                print(f"  Task {i+1} error: {type(result).__name__}: {result}")
+                continue
 
-        for i, record in enumerate(tqdm(task_records, desc="RLHF collection")):
-            extra = (coldstart_pool or {}).get(record["task"], [])
-            pairs, stats = await self.collect_for_task(
-                record, min_agents, max_agents,
-                extra_results=extra or None,
-                num_sample_for_tasks=num_sample_for_tasks,
-            )
+            pairs, stats = result
             buffer.extend(pairs)
             total_pairs += len(pairs)
-
             cum_total     += stats["total"]
             cum_correct   += stats["correct"]
             cum_incorrect += stats["incorrect"]
             cum_skipped   += stats["skipped"]
+
+            print(
+                f"  Task {i+1}/{len(task_records)}: "
+                f"graphs={stats['total']} "
+                f"(correct={stats['correct']}, incorrect={stats['incorrect']}"
+                + (f", skipped={stats['skipped']}" if stats["skipped"] else "")
+                + f")  +{len(pairs)} pairs  (total pairs: {total_pairs})"
+            )
 
             if (i + 1) % checkpoint_every == 0 or (i + 1) == len(task_records):
                 if buffer:
@@ -470,14 +563,6 @@ class RLHFDataCollector:
                     print(f"  Shard {shard_idx}: saved {len(buffer)} pairs → {path}")
                     shard_idx += 1
                     buffer = []
-
-            print(
-                f"  Task {i+1}/{len(task_records)}: "
-                f"graphs={stats['total']} "
-                f"(correct={stats['correct']}, incorrect={stats['incorrect']}"
-                + (f", skipped={stats['skipped']}" if stats["skipped"] else "")
-                + f")  +{len(pairs)} pairs  (total pairs: {total_pairs})"
-            )
 
         correct_rate = cum_correct / cum_total * 100 if cum_total else 0.0
         print(

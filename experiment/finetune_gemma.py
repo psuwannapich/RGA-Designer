@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import math
 import os
 import random
 import shutil
@@ -171,68 +170,58 @@ async def generate_pruned_data(args, dataset: list, output_dir: str, rlhf_dir: s
 
     saved = 0
     total = len(dataset)
+    sem = asyncio.Semaphore(args.batch_size)
+    pbar = tqdm(total=total, desc="Pruning")
 
-    with tqdm(total=total, desc="Pruning") as pbar:
-        for i in range(0, total, args.batch_size):
-            batch = list(enumerate(dataset[i: i + args.batch_size], start=i))
-            tasks = []
-
-            for idx, record in batch:
-                task_text = record['task']
-                emb = torch.tensor(
-                    sentence_model.encode(task_text),
-                    device=model.args.device,
-                ).float()
-                gens = generate_graph(model, emb, role_desc, idx)
-                pruned = apply_efficiency_strategy(gens, args.pruning_ratio)
-                if not pruned:
-                    pbar.update(1)
-                    continue
-                pyg_data = convert_to_pyg_graph(pruned[0], task_text)
-                tg = TestGraph(
-                    domain=args.dataset,
-                    llm_name=args.llm_name,
-                    decision_method=decision_method,
-                    pyg_data=pyg_data,
-                )
-                metadata = {
-                    'pyg_data': pyg_data,
-                    'record': record,
-                    'task_text': task_text,
-                    'idx': idx,
-                }
-                tasks.append((tg.arun({'task': task_text}, num_rounds=1), metadata))
-
-            if not tasks:
-                continue
-
-            results = await asyncio.gather(*[t for t, _ in tasks], return_exceptions=True)
-
-            for result, (_, meta) in zip(results, tasks):
+    async def _prune_one(idx: int, record: dict) -> None:
+        nonlocal saved
+        task_text = record['task']
+        emb = torch.tensor(
+            sentence_model.encode(task_text),
+            device=model.args.device,
+        ).float()
+        gens = generate_graph(model, emb, role_desc, idx)
+        pruned = apply_efficiency_strategy(gens, args.pruning_ratio)
+        if not pruned:
+            pbar.update(1)
+            return
+        pyg_data = convert_to_pyg_graph(pruned[0], task_text)
+        tg = TestGraph(
+            domain=args.dataset,
+            llm_name=args.llm_name,
+            decision_method=decision_method,
+            pyg_data=pyg_data,
+        )
+        async with sem:
+            try:
+                result = await tg.arun({'task': task_text}, num_rounds=1)
+            except Exception:
                 pbar.update(1)
-                if isinstance(result, Exception):
-                    continue
-                raw = result
-                if isinstance(raw, (list, tuple)) and raw:
-                    raw = raw[0]
-                if not isinstance(raw, str):
-                    raw = str(raw)
-                predicted = _get_predict(args.dataset, raw)
-                correct = _is_correct(args.dataset, predicted, meta['record']['answer'])
-                if correct:
-                    saved += 1
-                    fname = f"pruned_{args.dataset}_q{meta['idx']}_g0.pt"
-                    torch.save(meta['pyg_data'], os.path.join(output_dir, fname))
-                elif rlhf_dir:
-                    fname = f"pruned_{args.dataset}_q{meta['idx']}_g0_False.pt"
-                    from experiment.utils import save_graph_with_features
-                    save_graph_with_features(
-                        meta['pyg_data'],
-                        os.path.join(rlhf_dir, fname),
-                        {'mode': 'pruned', 'agent_nums': meta['pyg_data'].num_nodes,
-                         'is_correct': False, 'question': meta['task_text']},
-                    )
+                return
+        pbar.update(1)
+        raw = result
+        if isinstance(raw, (list, tuple)) and raw:
+            raw = raw[0]
+        if not isinstance(raw, str):
+            raw = str(raw)
+        predicted = _get_predict(args.dataset, raw)
+        correct = _is_correct(args.dataset, predicted, record['answer'])
+        if correct:
+            saved += 1
+            fname = f"pruned_{args.dataset}_q{idx}_g0.pt"
+            torch.save(pyg_data, os.path.join(output_dir, fname))
+        elif rlhf_dir:
+            fname = f"pruned_{args.dataset}_q{idx}_g0_False.pt"
+            from experiment.utils import save_graph_with_features
+            save_graph_with_features(
+                pyg_data,
+                os.path.join(rlhf_dir, fname),
+                {'mode': 'pruned', 'agent_nums': pyg_data.num_nodes,
+                 'is_correct': False, 'question': task_text},
+            )
 
+    await asyncio.gather(*(_prune_one(idx, r) for idx, r in enumerate(dataset)))
+    pbar.close()
     print(f"D_pruned done: {saved} graphs saved")
     return saved
 
@@ -266,62 +255,60 @@ async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: s
             **kwargs,
         )
 
-        num_batches = math.ceil(len(dataset) / args.batch_size)
-        for i_batch in tqdm(range(num_batches), desc=f"{mode}-{agent_num}"):
-            batch = dataset[i_batch * args.batch_size: (i_batch + 1) * args.batch_size]
-            if not batch:
-                continue
+        sem = asyncio.Semaphore(args.batch_size)
+        pbar = tqdm(total=len(dataset), desc=f"{mode}-{agent_num}")
 
-            tasks = []
-            for rec_idx, record in enumerate(batch):
-                global_idx = i_batch * args.batch_size + rec_idx
-                realized = copy.deepcopy(graph)
-                input_dict = {'task': record['task']}
-                flow_graph = realized.to_pyg_graph(input_dict)
-                tg = TestGraph(
-                    domain=args.dataset,
-                    llm_name=args.llm_name,
-                    decision_method=decision_method,
-                    pyg_data=flow_graph,
+        async def _simple_one(
+            global_idx: int, record: dict,
+            _mode: str = mode, _agent_num: int = agent_num,
+            _graph: Graph = graph,
+        ) -> None:
+            nonlocal saved
+            realized = copy.deepcopy(_graph)
+            input_dict = {'task': record['task']}
+            flow_graph = realized.to_pyg_graph(input_dict)
+            tg = TestGraph(
+                domain=args.dataset,
+                llm_name=args.llm_name,
+                decision_method=decision_method,
+                pyg_data=flow_graph,
+            )
+            async with sem:
+                try:
+                    result = await tg.arun(input_dict, args.num_rounds)
+                except Exception:
+                    pbar.update(1)
+                    return
+            raw = result
+            if isinstance(raw, (list, tuple)) and raw:
+                raw = raw[0]
+            if not isinstance(raw, str):
+                raw = str(raw)
+            predicted = _get_predict(args.dataset, raw)
+            correct = _is_correct(args.dataset, predicted, record['answer'])
+            label = 'True' if correct else 'False'
+            fname = "_".join([
+                args.dataset, str(global_idx), _mode, str(_agent_num), label
+            ]) + '.pt'
+            if correct:
+                saved += 1
+                save_graph_with_features(
+                    flow_graph,
+                    os.path.join(output_dir, fname),
+                    {'mode': _mode, 'agent_nums': _agent_num,
+                     'is_correct': True, 'question': record['task']},
                 )
-                meta = {
-                    'flow_graph': flow_graph,
-                    'record': record,
-                    'idx': global_idx,
-                }
-                tasks.append((tg.arun(input_dict, args.num_rounds), meta))
+            elif rlhf_dir:
+                save_graph_with_features(
+                    flow_graph,
+                    os.path.join(rlhf_dir, fname),
+                    {'mode': _mode, 'agent_nums': _agent_num,
+                     'is_correct': False, 'question': record['task']},
+                )
+            pbar.update(1)
 
-            results = await asyncio.gather(*[t for t, _ in tasks], return_exceptions=True)
-
-            for result, (_, meta) in zip(results, tasks):
-                if isinstance(result, Exception):
-                    continue
-                raw = result
-                if isinstance(raw, (list, tuple)) and raw:
-                    raw = raw[0]
-                if not isinstance(raw, str):
-                    raw = str(raw)
-                predicted = _get_predict(args.dataset, raw)
-                correct = _is_correct(args.dataset, predicted, meta['record']['answer'])
-                label = 'True' if correct else 'False'
-                fname = "_".join([
-                    args.dataset, str(meta['idx']), mode, str(agent_num), label
-                ]) + '.pt'
-                if correct:
-                    saved += 1
-                    save_graph_with_features(
-                        meta['flow_graph'],
-                        os.path.join(output_dir, fname),
-                        {'mode': mode, 'agent_nums': agent_num,
-                         'is_correct': True, 'question': meta['record']['task']},
-                    )
-                elif rlhf_dir:
-                    save_graph_with_features(
-                        meta['flow_graph'],
-                        os.path.join(rlhf_dir, fname),
-                        {'mode': mode, 'agent_nums': agent_num,
-                         'is_correct': False, 'question': meta['record']['task']},
-                    )
+        await asyncio.gather(*(_simple_one(i, r) for i, r in enumerate(dataset)))
+        pbar.close()
 
     print(f"D_simple done: {saved} graphs saved")
     return saved

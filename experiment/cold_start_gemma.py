@@ -23,7 +23,6 @@ Supported models  : any Ollama short name (gemma3, llama3.2, ...)
 import os
 import sys
 import json
-import math
 import copy
 import asyncio
 import random
@@ -210,6 +209,7 @@ async def evaluate_and_save(
     solved_counter: dict,
     checkpoint: dict,
     rlhf_dir: str = "",
+    sem: asyncio.Semaphore = None,
 ):
     config_key = f"{mode}_{agent_num}"
     done_indices = checkpoint.get(config_key, set())
@@ -230,106 +230,78 @@ async def evaluate_and_save(
     if skipped:
         print(f"  {mode}-{agent_num}: resuming — {skipped} done, {len(pending)} remaining.")
 
-    num_batches = math.ceil(len(pending) / args.batch_size)
+    if sem is None:
+        sem = asyncio.Semaphore(args.batch_size)
+    pbar = tqdm(total=len(pending), desc=f"{mode}-{agent_num}")
     total_solved = 0
 
-    for i_batch in tqdm(range(num_batches), desc=f"{mode}-{agent_num}"):
-        batch = pending[i_batch * args.batch_size: (i_batch + 1) * args.batch_size]
-        if not batch:
-            continue
-
-        tasks = []
-        for global_idx, record in batch:
-            realized = copy.deepcopy(graph)
-            input_dict = {"task": record["task"]}
-            flow_graph = realized.to_pyg_graph(input_dict)
-            tg = TestGraph(
-                domain=args.dataset,
-                llm_name=args.llm_name,
-                decision_method=_get_decision_method(args.dataset),
-                pyg_data=flow_graph,
-            )
-            metadata = {
-                "record": record,
-                "flow_graph": flow_graph,
-                "question": record["task"],
-                "global_idx": global_idx,
-            }
-            tasks.append((tg.arun(input_dict, args.num_rounds), metadata))
-
-        results = await asyncio.gather(
-            *[t for t, _ in tasks], return_exceptions=True
+    async def _run_one(global_idx: int, record: dict) -> None:
+        nonlocal total_solved
+        realized = copy.deepcopy(graph)
+        input_dict = {"task": record["task"]}
+        flow_graph = realized.to_pyg_graph(input_dict)
+        tg = TestGraph(
+            domain=args.dataset,
+            llm_name=args.llm_name,
+            decision_method=_get_decision_method(args.dataset),
+            pyg_data=flow_graph,
         )
 
-        csv_rows = []
-        batch_completed = set()
-        for i, result in enumerate(results):
-            meta = tasks[i][1]
-            record = meta["record"]
-
-            if isinstance(result, Exception):
+        async with sem:
+            try:
+                result = await tg.arun(input_dict, args.num_rounds)
+            except Exception as e:
                 # Don't checkpoint errors so they are retried next run.
-                print(f"  [error] task {meta['global_idx']}: {result}")
-                continue
+                print(f"  [error] task {global_idx}: {e}")
+                pbar.update(1)
+                return
 
-            raw_answer = result[0] if isinstance(result, (list, tuple)) else result
-            if isinstance(raw_answer, list) and raw_answer:
-                raw_answer = raw_answer[0]
-            if not isinstance(raw_answer, str):
-                raw_answer = str(raw_answer)
+        raw_answer = result[0] if isinstance(result, (list, tuple)) else result
+        if isinstance(raw_answer, list) and raw_answer:
+            raw_answer = raw_answer[0]
+        if not isinstance(raw_answer, str):
+            raw_answer = str(raw_answer)
 
-            predicted = _get_predict(args.dataset, raw_answer)
-            correct = _is_correct(args.dataset, predicted, record["answer"])
+        predicted = _get_predict(args.dataset, raw_answer)
+        correct = _is_correct(args.dataset, predicted, record["answer"])
 
-            name = "_".join([
-                args.dataset,
-                str(meta["global_idx"]),
-                mode,
-                str(agent_num),
-                str(correct),
-            ])
-            if correct:
-                total_solved += 1
-                solved_counter['total'] += 1
-                filepath = os.path.join(output_dir, f"{name}.pt")
-                save_graph_with_features(meta["flow_graph"], filepath, {
-                    "mode": mode,
-                    "agent_nums": agent_num,
-                    "is_correct": True,
-                    "question": meta["question"],
-                })
-            elif rlhf_dir:
-                # Save incorrect graphs for RLHF preference pairing only —
-                # rlhf_dir is intentionally separate from output_dir so these
-                # are never loaded by the ARGDesigner trainer or replay buffer.
-                filepath = os.path.join(rlhf_dir, f"{name}.pt")
-                save_graph_with_features(meta["flow_graph"], filepath, {
-                    "mode": mode,
-                    "agent_nums": agent_num,
-                    "is_correct": False,
-                    "question": meta["question"],
-                })
-
-            csv_rows.append({
-                "dataset": args.dataset,
-                "id": meta["global_idx"],
-                "question": meta["question"],
-                "answer": record["answer"],
-                "mode": mode,
-                "size": agent_num,
-                "is_correct": correct,
+        name = "_".join([args.dataset, str(global_idx), mode, str(agent_num), str(correct)])
+        if correct:
+            total_solved += 1
+            solved_counter['total'] += 1
+            filepath = os.path.join(output_dir, f"{name}.pt")
+            save_graph_with_features(flow_graph, filepath, {
+                "mode": mode, "agent_nums": agent_num,
+                "is_correct": True, "question": record["task"],
             })
-            batch_completed.add(meta["global_idx"])
+        elif rlhf_dir:
+            # Save incorrect graphs for RLHF preference pairing only —
+            # rlhf_dir is intentionally separate from output_dir so these
+            # are never loaded by the ARGDesigner trainer or replay buffer.
+            filepath = os.path.join(rlhf_dir, f"{name}.pt")
+            save_graph_with_features(flow_graph, filepath, {
+                "mode": mode, "agent_nums": agent_num,
+                "is_correct": False, "question": record["task"],
+            })
 
-        _write_csv(output_dir, csv_rows, args.dataset)
+        _write_csv(output_dir, [{
+            "dataset": args.dataset,
+            "id": global_idx,
+            "question": record["task"],
+            "answer": record["answer"],
+            "mode": mode,
+            "size": agent_num,
+            "is_correct": correct,
+        }], args.dataset)
 
-        # Persist checkpoint after each batch so partial progress is never lost.
-        if batch_completed:
-            if config_key not in checkpoint:
-                checkpoint[config_key] = set()
-            checkpoint[config_key].update(batch_completed)
-            _save_checkpoint(output_dir, checkpoint)
+        if config_key not in checkpoint:
+            checkpoint[config_key] = set()
+        checkpoint[config_key].add(global_idx)
+        _save_checkpoint(output_dir, checkpoint)
+        pbar.update(1)
 
+    await asyncio.gather(*(_run_one(gi, r) for gi, r in pending))
+    pbar.close()
     print(f"  {mode}-{agent_num}: solved {total_solved}/{len(pending)} new tasks")
 
 
@@ -500,15 +472,13 @@ async def main():
 
     solved_counter = {'total': 0}
 
+    # Build all topology graphs up-front (sync, no I/O).
+    config_graphs = []
     for mode, agent_num in configs:
-        print(f"=== Config: {mode}, {agent_num} agents ===")
         kwargs = get_kwargs(mode, agent_num)
-
-        # Assign random roles to each agent node
         random_roles = random.choices(available_roles, k=agent_num)
         kwargs['node_kwargs'] = [{'role': r} for r in random_roles]
-        print(f"  Roles assigned: {random_roles}")
-
+        print(f"=== Config: {mode}, {agent_num} agents — roles: {random_roles} ===")
         graph = Graph(
             domain=args.dataset,
             llm_name=args.llm_name,
@@ -516,8 +486,14 @@ async def main():
             decision_method=decision_method,
             **kwargs,
         )
+        config_graphs.append((mode, agent_num, graph))
 
-        await evaluate_and_save(
+    # Single shared semaphore: all topology×task coroutines compete for the
+    # same batch_size slots so vLLM stays at capacity without being overloaded.
+    sem = asyncio.Semaphore(args.batch_size)
+
+    await asyncio.gather(*(
+        evaluate_and_save(
             graph=graph,
             dataset_records=sampled,
             args=args,
@@ -527,7 +503,10 @@ async def main():
             solved_counter=solved_counter,
             checkpoint=checkpoint,
             rlhf_dir=rlhf_dir,
+            sem=sem,
         )
+        for mode, agent_num, graph in config_graphs
+    ))
 
     print(f"\nDone. Total graphs saved: {solved_counter['total']}")
     print(f"Dataset saved to: {args.output_dir}/")

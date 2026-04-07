@@ -69,9 +69,16 @@ class GPTChat(LLM):
         completion = await client.chat.completions.create(**create_kwargs)
 
         if completion.usage:
-            from mas_framework.utils.globals import PromptTokens, CompletionTokens
-            PromptTokens.instance().value   += completion.usage.prompt_tokens
-            CompletionTokens.instance().value += completion.usage.completion_tokens
+            from mas_framework.utils.globals import (
+                PromptTokens, CompletionTokens,
+                task_prompt_tokens, task_completion_tokens,
+            )
+            pt = completion.usage.prompt_tokens
+            ct = completion.usage.completion_tokens
+            PromptTokens.instance().value    += pt
+            CompletionTokens.instance().value += ct
+            task_prompt_tokens.set(task_prompt_tokens.get() + pt)
+            task_completion_tokens.set(task_completion_tokens.get() + ct)
 
         return completion.choices[0].message.content or ""
 
