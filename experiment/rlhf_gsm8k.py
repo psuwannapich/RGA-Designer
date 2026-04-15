@@ -199,6 +199,7 @@ async def _collect(args):
         correctness=args.w_correct,
         graph_size=args.w_size,
         edge_cost=args.w_edge,
+        ref_max_nodes=args.max_agents,  # match dataset-specific max agents
     )
 
     arg_model = None
@@ -254,7 +255,7 @@ def _train_rm(args):
 
     device = torch.device(args.device)
     model = GraphRewardModel(
-        node_feat_dim=768,
+        node_feat_dim=773,
         hidden_dim=args.rm_hidden_dim,
         output_dim=args.rm_output_dim,
     )

@@ -174,7 +174,7 @@ def train_reward_model(
 def load_reward_model(
     checkpoint_path: str,
     device: torch.device,
-    node_feat_dim: int = 768,
+    node_feat_dim: int = 773,
     hidden_dim: int = 256,
     output_dim: int = 128,
 ) -> GraphRewardModel:

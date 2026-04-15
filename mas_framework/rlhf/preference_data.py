@@ -82,30 +82,61 @@ class GraphSnapshot:
         return g
 
     def to_pyg(self, task_embedding: Optional[np.ndarray] = None) -> Data:
-        """Convert to a PyG Data object with 768-dim node features.
+        """Convert to a PyG Data object with 773-dim node features.
 
-        Node feature = concat(role_embedding[384], task_embedding[384]).
+        Node feature = concat(role_embedding[384], task_embedding[384],
+                              structural_features[5]).
         Falls back to zero vectors when embeddings are missing.
+
+        Structural features break the symmetry that would otherwise make all
+        nodes in a single-role graph (e.g. all MathSolver) identical, which
+        would cause the GNN to assign the same reward to any graph size.
         """
         from mas_framework.rlhf.reward_model import build_node_features
 
         EMB_DIM = 384
+        MAX_NODES = 6    # maximum agents across all datasets (MMLU uses 6)
+        MAX_EDGES = 15   # max DAG edges for 6 nodes: 6*5/2 = 15
+
+        N = self.num_nodes
+        E = len(self.edges)
+
+        # Compute per-node degree from edge list
+        in_deg  = [0] * N
+        out_deg = [0] * N
+        for u, v in self.edges:
+            if 0 <= u < N and 0 <= v < N:
+                out_deg[u] += 1
+                in_deg[v]  += 1
+
         node_feats = []
-        for nd in self.nodes:
+        struct_feats = []
+        for i, nd in enumerate(self.nodes):
             if nd["role_embedding"] is not None:
                 role_emb = torch.tensor(nd["role_embedding"], dtype=torch.float32)
             else:
                 role_emb = torch.zeros(EMB_DIM)
             node_feats.append(role_emb)
 
-        x_role = torch.stack(node_feats) if node_feats else torch.zeros(1, EMB_DIM)
+            # Structural scalars — all in [0, 1]
+            norm_denom = max(N - 1, 1)
+            struct_feats.append([
+                N / MAX_NODES,             # graph size
+                E / MAX_EDGES,             # edge density
+                i / norm_denom,            # node position in generation order
+                in_deg[i]  / norm_denom,  # in-degree
+                out_deg[i] / norm_denom,  # out-degree
+            ])
+
+        x_role   = torch.stack(node_feats) if node_feats else torch.zeros(1, EMB_DIM)
+        x_struct = torch.tensor(struct_feats, dtype=torch.float32)  # [N, 5]
 
         if task_embedding is not None:
             t_emb = torch.tensor(task_embedding, dtype=torch.float32)
         else:
             t_emb = torch.zeros(EMB_DIM)
 
-        x = build_node_features(x_role, t_emb)          # [N, 768]
+        x = build_node_features(x_role, t_emb, x_struct)   # [N, 773]
 
         if self.edges:
             edge_index = torch.tensor(self.edges, dtype=torch.long).t().contiguous()

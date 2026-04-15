@@ -3,13 +3,24 @@ GNN-based reward model for scoring (graph, task) pairs.
 
 Architecture
 ------------
-Node features : concat(role_embedding[384], task_embedding_broadcast[384]) → 768-dim
-GNN           : SAGEConv(768→256) + residual → SAGEConv(256→128)
+Node features : concat(role_embedding[384], task_embedding_broadcast[384],
+                       structural_features[5]) → 773-dim
+                Structural features (per node, all normalized to [0,1]):
+                  num_nodes / 6, num_edges / 15, node_position / (N-1),
+                  in_degree / (N-1), out_degree / (N-1)
+GNN           : SAGEConv(773→256) + residual → SAGEConv(256→128)
                 SAGEConv handles empty edge_index gracefully (falls back to self-transform)
 Pooling       : global mean pool → [B, 128]
 Reward head   : MLP(128→64→1) → scalar reward per graph
 
 Training loss : Bradley-Terry  L = -log σ(r_chosen − r_rejected)
+
+Note on structural features
+---------------------------
+Without structural features, all nodes in a single-role dataset (e.g. all
+MathSolver) carry identical 768-dim vectors. SAGEConv then produces the same
+output for any N, so the reward model cannot distinguish a 2-node chain from
+a 4-node chain. The 5 structural features break this symmetry.
 """
 
 import torch
@@ -23,7 +34,7 @@ class GraphRewardModel(nn.Module):
 
     def __init__(
         self,
-        node_feat_dim: int = 768,   # 384 role-emb + 384 task-emb per node
+        node_feat_dim: int = 773,   # 384 role-emb + 384 task-emb + 5 structural per node
         hidden_dim: int = 256,
         output_dim: int = 128,
         dropout: float = 0.1,
@@ -128,13 +139,25 @@ class GraphRewardModel(nn.Module):
 
 
 def build_node_features(
-    role_embeddings: torch.Tensor,  # [N, 384]
-    task_embedding: torch.Tensor,   # [384]  (single task, broadcast to all nodes)
-) -> torch.Tensor:                  # [N, 768]
+    role_embeddings: torch.Tensor,          # [N, 384]
+    task_embedding: torch.Tensor,           # [384]  (single task, broadcast to all nodes)
+    structural_features: torch.Tensor,      # [N, 5]  per-node structural scalars
+) -> torch.Tensor:                          # [N, 773]
     """
-    Concatenate role embedding with broadcast task embedding per node.
-    This puts graph structure and task context in the same feature space
-    used by graph.py's construct_new_features().
+    Concatenate role embedding, broadcast task embedding, and per-node
+    structural features.
+
+    Structural features (5 scalars, all in [0, 1]):
+      0: num_nodes / 6          — graph size (same for all nodes in graph)
+      1: num_edges / 15         — edge count (same for all nodes in graph)
+      2: node_position / (N-1)  — position in generation order
+      3: in_degree  / (N-1)     — incoming neighbours
+      4: out_degree / (N-1)     — outgoing neighbours
+
+    Without these, all nodes in a single-role dataset have identical 768-dim
+    vectors. SAGEConv + mean-pool then outputs the same reward regardless of
+    graph size, making the reward model useless for size-aware learning.
     """
-    task_broadcast = task_embedding.unsqueeze(0).expand(role_embeddings.size(0), -1)
-    return torch.cat([role_embeddings, task_broadcast], dim=-1)
+    N = role_embeddings.size(0)
+    task_broadcast = task_embedding.unsqueeze(0).expand(N, -1)
+    return torch.cat([role_embeddings, task_broadcast, structural_features], dim=-1)
