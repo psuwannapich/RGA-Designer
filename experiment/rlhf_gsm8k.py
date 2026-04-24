@@ -485,6 +485,7 @@ def _train_rm(args):
         save_path=args.rm_checkpoint,
         both_wrong_weight=args.both_wrong_weight,
         both_correct_weight=args.both_correct_weight,
+        loss_type=args.rm_loss,
     )
 
 
@@ -535,6 +536,8 @@ def _train_policy(args):
         device=device,
         lr=args.policy_lr,
         kl_coeff=args.kl_coeff,
+        lambda_eff=args.lambda_eff,
+        ref_max_nodes=args.max_agents,
     )
     trainer.train(
         task_records=task_records,
@@ -683,6 +686,14 @@ def parse_args():
                         "correctness information. Lower values (e.g. 0.1) reduce "
                         "their influence so the reward model focuses on correctness "
                         "differences. Set to 0 to remove them entirely.")
+    p.add_argument("--rm_loss", default="bradley_terry",
+                   choices=["bradley_terry", "bce"],
+                   help="Reward model training loss. "
+                        "'bradley_terry' (default): pairwise ranking loss "
+                        "L = -log σ(r_chosen - r_rejected). "
+                        "'bce': per-graph binary correctness loss "
+                        "L = BCE(r_chosen, chosen_is_correct) + BCE(r_rejected, rejected_is_correct). "
+                        "Use 'bce' when graph size has been removed from the preference score.")
 
     # Policy
     p.add_argument("--model_dir", default="",
@@ -692,6 +703,13 @@ def parse_args():
     p.add_argument("--policy_epochs", type=int, default=10)
     p.add_argument("--policy_lr", type=float, default=1e-5)
     p.add_argument("--kl_coeff", type=float, default=0.1)
+    p.add_argument("--lambda_eff", type=float, default=0.0,
+                   help="Weight for the efficiency bonus added directly to the RM reward "
+                        "during GRPO (default: 0 = disabled). "
+                        "Bonus = lambda_eff * mean(node_bonus, edge_bonus) where "
+                        "node_bonus = 1 - num_nodes/ref_max_nodes and "
+                        "edge_bonus = 1 - num_edges/ref_max_edges. "
+                        "Recommended range: 0.1–0.3.")
     p.add_argument("--samples_per_task", type=int, default=4,
                    help="Graphs sampled per task per GRPO step; ≥4 recommended so "
                         "within-group advantage magnitude encodes reward differences")
