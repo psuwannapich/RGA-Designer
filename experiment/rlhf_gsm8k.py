@@ -171,6 +171,194 @@ def _load_coldstart_pool(coldstart_dirs):
     return dict(pool)
 
 
+def _filter_by_difficulty(sample, coldstart_pool, min_fail_rate: float = 0.05):
+    """Keep only tasks where at least *min_fail_rate* of cold-start runs were wrong.
+
+    Tasks where every cold-start topology succeeded are "all-correct" tasks —
+    they produce no correctness-differentiating preference pairs (every graph
+    gets a correct answer regardless of structure). Dropping them focuses RLHF
+    collection on tasks where topology choice actually affects correctness.
+    """
+    filtered, skipped = [], 0
+    for rec in sample:
+        graphs = coldstart_pool.get(rec["task"], [])
+        if not graphs:
+            filtered.append(rec)  # no cold-start data → keep, can't judge
+            continue
+        n_wrong = sum(1 for g in graphs if not g["is_correct"])
+        if n_wrong / len(graphs) >= min_fail_rate:
+            filtered.append(rec)
+        else:
+            skipped += 1
+    print(f"  Difficulty filter (min_fail_rate={min_fail_rate}): "
+          f"kept {len(filtered)}/{len(filtered)+skipped} tasks "
+          f"({skipped} all-correct tasks dropped)")
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# Phase 1a — generate ARGDesigner candidate graphs (no LLM, no vLLM)
+# ---------------------------------------------------------------------------
+
+def _gen_candidates(args):
+    """Generate graph candidates for all tasks using ARGDesigner (GNN only, no LLM).
+
+    Saves {preference_dir}/candidates.pkl — a list of per-task dicts:
+      {"record": {...}, "candidates": [(nx.DiGraph, label), ...]}
+
+    Called before vLLM is started so the GPU is free for ARGDesigner inference.
+    """
+    from mas_framework.rlhf.data_collector import RLHFDataCollector
+    from mas_framework.rlhf.preference_data import PreferenceWeights
+    import random
+
+    os.makedirs(args.preference_dir, exist_ok=True)
+    candidates_path = os.path.join(args.preference_dir, "candidates.pkl")
+
+    all_records = _load_dataset(args.dataset, args.dataset_json)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    task_split = _load_task_split(args.dataset, project_root)
+    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    dataset = [all_records[i] for i in train_indices]
+    print(f"Using base+finetune split: {len(dataset)}/{len(all_records)} records (test excluded)")
+
+    random.seed(args.seed)
+    sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
+    num_sample_for_tasks = int(args.num_tasks / len(sample))
+    print(f"Generating candidates for {len(sample)} tasks ({args.dataset}) ...")
+
+    role_desc = _get_role_description(args.dataset)
+    decision_method = _get_decision_method(args.dataset)
+    agent_name = _get_agent_name(args.dataset)
+
+    # Optional difficulty filter (needs cold-start pool to compute fail rates)
+    coldstart_pool = None
+    if args.coldstart_dirs:
+        print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
+        coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
+
+    if args.difficulty_filter and coldstart_pool:
+        sample = _filter_by_difficulty(sample, coldstart_pool, args.min_fail_rate)
+        if not sample:
+            print("WARNING: difficulty filter removed all tasks — disabling filter.")
+            random.seed(args.seed)
+            sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
+
+    arg_model = None
+    if args.arg_model_dir:
+        from experiment.utils import load_model
+        print(f"Loading ARGDesigner model from {args.arg_model_dir} ...")
+        arg_model = load_model(args.arg_model_dir, ef=True)
+        arg_model.eval()
+
+    weights = PreferenceWeights(
+        correctness=args.w_correct,
+        graph_size=args.w_size,
+        edge_cost=args.w_edge,
+        ref_max_nodes=args.max_agents,
+    )
+
+    collector = RLHFDataCollector(
+        domain=args.dataset,
+        llm_name=args.llm_name,          # stored but not called during gen_candidates
+        answer_checker=_answer_checker(args.dataset),
+        get_predict=_predict_fn(args.dataset),
+        role_descriptions=role_desc,
+        agent_name=agent_name,
+        decision_method=decision_method,
+        num_rounds=1,
+        weights=weights,
+        pair_margin=args.pair_margin,
+        timeout=args.llm_timeout,
+        arg_model=arg_model,
+        sample_temperatures=args.sample_temperatures,
+        arg_model_samples=args.arg_model_samples,
+        pruning_ratio=0.0,               # pruning happens during score phase
+        weak_baselines=args.weak_baselines,
+        role_sweep=args.role_sweep,
+        role_sweep_topology=args.role_sweep_topology,
+        role_sweep_n_agents=args.role_sweep_n_agents,
+        role_sweep_max_combos=args.role_sweep_max_combos,
+    )
+
+    collector.generate_all_candidates(
+        task_records=sample,
+        output_path=candidates_path,
+        min_agents=args.min_agents,
+        max_agents=args.max_agents,
+        num_sample_for_tasks=num_sample_for_tasks,
+    )
+    print(f"\nGen-candidates phase complete. Saved → {candidates_path}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — LLM scoring of pre-generated candidates
+# ---------------------------------------------------------------------------
+
+async def _collect_llm(args):
+    """Run LLM inference on pre-generated candidates and write preference-pair shards.
+
+    Requires {preference_dir}/candidates.pkl written by _gen_candidates().
+    Called after vLLM has been started so LLM inference is available.
+    """
+    from mas_framework.rlhf.data_collector import RLHFDataCollector
+    from mas_framework.rlhf.preference_data import PreferenceWeights
+
+    candidates_path = os.path.join(args.preference_dir, "candidates.pkl")
+    if not os.path.exists(candidates_path):
+        raise FileNotFoundError(
+            f"candidates.pkl not found: {candidates_path}\n"
+            "Run --phase gen_candidates first."
+        )
+
+    role_desc = _get_role_description(args.dataset)
+    decision_method = _get_decision_method(args.dataset)
+    agent_name = _get_agent_name(args.dataset)
+
+    weights = PreferenceWeights(
+        correctness=args.w_correct,
+        graph_size=args.w_size,
+        edge_cost=args.w_edge,
+        ref_max_nodes=args.max_agents,
+    )
+
+    # Load cold-start pool for free preference pairs (pre-scored, no LLM calls)
+    coldstart_pool = None
+    if args.coldstart_dirs:
+        print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
+        coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
+
+    collector = RLHFDataCollector(
+        domain=args.dataset,
+        llm_name=args.llm_name,
+        answer_checker=_answer_checker(args.dataset),
+        get_predict=_predict_fn(args.dataset),
+        role_descriptions=role_desc,
+        agent_name=agent_name,
+        decision_method=decision_method,
+        num_rounds=1,
+        weights=weights,
+        pair_margin=args.pair_margin,
+        timeout=args.llm_timeout,
+        arg_model=None,                  # not needed for scoring
+        pruning_ratio=args.pruning_ratio,
+        inference_concurrency=args.inference_concurrency,
+    )
+
+    total = await collector.collect_from_candidates(
+        candidates_path=candidates_path,
+        output_dir=args.preference_dir,
+        checkpoint_every=args.checkpoint_every,
+        coldstart_pool=coldstart_pool,
+        task_concurrency=args.task_concurrency,
+    )
+    print(f"\nCollect-LLM phase complete. Total preference pairs: {total}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 (legacy) — collect preference data (combined gen + LLM in one call)
+# ---------------------------------------------------------------------------
+
 async def _collect(args):
     from mas_framework.rlhf.data_collector import RLHFDataCollector
     from mas_framework.rlhf.preference_data import PreferenceWeights
@@ -209,6 +397,20 @@ async def _collect(args):
         arg_model = load_model(args.arg_model_dir, ef=True)
         arg_model.eval()
 
+    # Load cold-start pool early so difficulty filter can use it
+    coldstart_pool = None
+    if args.coldstart_dirs:
+        print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
+        coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
+
+    # Difficulty pre-screening: drop tasks where all cold-start topologies succeeded.
+    # Focuses RLHF on tasks where topology choice affects correctness.
+    if args.difficulty_filter and coldstart_pool:
+        sample = _filter_by_difficulty(sample, coldstart_pool, args.min_fail_rate)
+        if not sample:
+            print("WARNING: difficulty filter removed all tasks — disabling filter.")
+            sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
+
     collector = RLHFDataCollector(
         domain=args.dataset,
         llm_name=args.llm_name,
@@ -225,12 +427,13 @@ async def _collect(args):
         sample_temperatures=args.sample_temperatures,
         arg_model_samples=args.arg_model_samples,
         pruning_ratio=args.pruning_ratio,
+        weak_baselines=args.weak_baselines,
+        role_sweep=args.role_sweep,
+        role_sweep_topology=args.role_sweep_topology,
+        role_sweep_n_agents=args.role_sweep_n_agents,
+        role_sweep_max_combos=args.role_sweep_max_combos,
+        inference_concurrency=args.inference_concurrency,
     )
-
-    coldstart_pool = None
-    if args.coldstart_dirs:
-        print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
-        coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
 
     total = await collector.collect_dataset(
         task_records=sample,
@@ -281,6 +484,7 @@ def _train_rm(args):
         val_fraction=args.rm_val_fraction,
         save_path=args.rm_checkpoint,
         both_wrong_weight=args.both_wrong_weight,
+        both_correct_weight=args.both_correct_weight,
     )
 
 
@@ -294,7 +498,7 @@ def _train_policy(args):
     from experiment.utils import load_model
     import random
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+    from mas_framework.llm.profile_embedding import get_sentence_model
 
     device = torch.device(args.device)
 
@@ -315,7 +519,7 @@ def _train_policy(args):
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
 
-    sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
+    sent_model = get_sentence_model()
     task_records = []
     for rec in sample:
         task_records.append({
@@ -366,8 +570,17 @@ def parse_args():
     p = argparse.ArgumentParser(description="RLHF pipeline for ARG-Designer (all datasets)")
     p.add_argument("--dataset", required=True, choices=SUPPORTED_DATASETS,
                    help="Dataset to run RLHF on")
-    p.add_argument("--phase", choices=["collect", "train_rm", "train_policy"],
-                   required=True, help="Pipeline phase to run")
+    p.add_argument("--phase",
+                   choices=["collect", "gen_candidates", "collect_llm",
+                            "train_rm", "train_policy"],
+                   required=True,
+                   help=(
+                       "collect        — legacy: generate + score in one call (vLLM must run). "
+                       "gen_candidates — Phase 1a: generate ARGDesigner graphs (no vLLM, GPU free). "
+                       "collect_llm    — Phase 1b: LLM scoring of saved candidates (vLLM required). "
+                       "train_rm       — train GNN reward model. "
+                       "train_policy   — REINFORCE+KL fine-tuning of ARGDesigner policy."
+                   ))
 
     # Shared
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -399,6 +612,8 @@ def parse_args():
     p.add_argument("--checkpoint_every", type=int, default=20)
     p.add_argument("--task_concurrency", type=int, default=4,
                    help="Number of tasks whose LLM inference runs concurrently during collect")
+    p.add_argument("--inference_concurrency", type=int, default=8,
+                   help="Max concurrent vLLM requests across all tasks (default: 8)")
     p.add_argument("--llm_timeout", type=int, default=600,
                    help="Seconds to wait for a single LLM graph run (default: 600)")
     p.add_argument("--arg_model_dir", default=None,
@@ -416,6 +631,34 @@ def parse_args():
                    help="Optional: one or more ColdStart/Finetune .pt directories whose "
                         "graphs are converted to preference pairs without re-running LLM "
                         "inference (is_correct is already recorded in each .pt file).")
+    p.add_argument("--difficulty_filter", action="store_true", default=False,
+                   help="Drop tasks where all cold-start runs were correct before collecting. "
+                        "Focuses preference data on tasks where topology choice matters "
+                        "(requires --coldstart_dirs). Recommended for high-ceiling datasets "
+                        "like multiarith and svamp.")
+    p.add_argument("--min_fail_rate", type=float, default=0.05,
+                   help="Minimum fraction of cold-start runs that must have been wrong "
+                        "for a task to pass the difficulty filter (default: 0.05).")
+    p.add_argument("--weak_baselines", action="store_true", default=False,
+                   help="Add a 1-agent and an over-sized (max_agents+1) Chain config to "
+                        "the default topology grid. Forces some incorrect runs even for "
+                        "near-ceiling datasets, creating correctness-differentiating pairs.")
+    p.add_argument("--role_sweep", action="store_true", default=False,
+                   help="Enable role-assignment sweep: fix topology and exhaustively run "
+                        "all ordered role combinations per task. Produces dense role-quality "
+                        "signal for the reward model, which is more informative than topology "
+                        "variation on near-ceiling datasets (GSM8K, SVAMP).")
+    p.add_argument("--role_sweep_topology", default="Chain",
+                   choices=["Chain", "Star", "FullConnected"],
+                   help="Fixed topology used for role sweep configs (default: Chain).")
+    p.add_argument("--role_sweep_n_agents", type=lambda s: [int(x) for x in s.split(",")],
+                   default=[2],
+                   metavar="N[,N...]",
+                   help="Comma-separated agent counts for role sweep (default: 2). "
+                        "E.g. '2,3' sweeps 2-node and 3-node chains.")
+    p.add_argument("--role_sweep_max_combos", type=int, default=None,
+                   help="Cap the number of role combinations per agent count to avoid "
+                        "combinatorial explosion (default: no cap — 4 roles × n=2 = 16 configs).")
 
     # Reward model
     p.add_argument("--preference_dirs", nargs="+", default=None,
@@ -433,6 +676,13 @@ def parse_args():
                    help="Loss weight for pairs where both candidates are incorrect "
                         "(default: 0.2). Set to 0 to remove them entirely; "
                         "set to 1.0 to disable down-weighting.")
+    p.add_argument("--both_correct_weight", type=float, default=1.0,
+                   help="Loss weight for pairs where both candidates are correct "
+                        "(default: 1.0, full weight). These pairs carry only a "
+                        "graph-efficiency signal (size/edge preference) with no "
+                        "correctness information. Lower values (e.g. 0.1) reduce "
+                        "their influence so the reward model focuses on correctness "
+                        "differences. Set to 0 to remove them entirely.")
 
     # Policy
     p.add_argument("--model_dir", default="",
@@ -474,6 +724,20 @@ def cli():
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(_collect(args))
+        os._exit(0)
+
+    elif args.phase == "gen_candidates":
+        # Synchronous — no vLLM needed; ARGDesigner GNN can use GPU freely.
+        if args.dataset_json is None:
+            raise ValueError("--dataset_json is required for the gen_candidates phase")
+        _gen_candidates(args)
+
+    elif args.phase == "collect_llm":
+        # Async — vLLM must be running before calling this phase.
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        asyncio.run(_collect_llm(args))
+        os._exit(0)
 
     elif args.phase == "train_rm":
         _train_rm(args)

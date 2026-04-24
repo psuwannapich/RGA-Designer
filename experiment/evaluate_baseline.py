@@ -117,6 +117,8 @@ async def _run_vanilla(
     llm = LLMRegistry.get(llm_name)
     try:
         result = await llm.agen(_vanilla_prompt(task))
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         import traceback
         print(f"  [vanilla error] {type(e).__name__}: {e}")
@@ -184,7 +186,12 @@ async def _run_once(
         pyg_data=flow_graph,
     )
     try:
-        result = await tg.arun(input_dict, 1)
+        result = await asyncio.wait_for(
+            tg.arun(input_dict, 1),
+            timeout=1200,
+        )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         import traceback
         print(f"  [error] {type(e).__name__}: {e}")
@@ -404,6 +411,16 @@ async def evaluate(args) -> None:
             f.write(json.dumps(summary) + "\n")
         print(f"Summary appended to: {args.summary_log_file}")
 
+    # Cancel any orphaned background tasks (e.g. httpx connection-pool cleanup)
+    # that asyncio.wait_for timeouts leave behind, to avoid hanging in asyncio.run()
+    # shutdown after the last task completes.
+    _current = asyncio.current_task()
+    _pending = [t for t in asyncio.all_tasks() if t is not _current]
+    if _pending:
+        for t in _pending:
+            t.cancel()
+        await asyncio.gather(*_pending, return_exceptions=True)
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -453,6 +470,7 @@ def cli():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(evaluate(args))
+    os._exit(0)
 
 
 if __name__ == "__main__":

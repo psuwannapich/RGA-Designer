@@ -219,6 +219,8 @@ class RLHFPolicyTrainer:
         device: torch.device,
         lr: float = 1e-5,
         kl_coeff: float = 0.1,
+        lambda_eff: float = 0.0,
+        ref_max_nodes: int = 4,
     ):
         self.policy = policy.to(device)
         self.reward_model = reward_model.to(device)
@@ -228,6 +230,8 @@ class RLHFPolicyTrainer:
 
         self.device = device
         self.kl_coeff = kl_coeff
+        self.lambda_eff = lambda_eff
+        self.ref_max_nodes = ref_max_nodes
 
         # Frozen reference policy for KL penalty
         self.ref_policy = copy.deepcopy(policy).to(device)
@@ -278,8 +282,8 @@ class RLHFPolicyTrainer:
         grad_accum_steps  : number of tasks to accumulate gradients over before
                             calling optimizer.step() (reduces per-step variance)
         """
-        from sentence_transformers import SentenceTransformer
-        sent_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
+        from mas_framework.llm.profile_embedding import get_sentence_model
+        sent_model = get_sentence_model()
 
         best_reward = float("-inf")
         best_epoch = 0
@@ -306,6 +310,12 @@ class RLHFPolicyTrainer:
                 # Collect all samples for this task first.
                 self.policy.train()
                 sample_logprobs, sample_rewards, sample_kls = [], [], []
+
+                # Pre-compute max possible edges for an autoregressive DAG
+                # with ref_max_nodes nodes: each node i can connect to all i
+                # prior nodes → sum(0..N-1) = N*(N-1)/2.
+                ref_max_edges = self.ref_max_nodes * (self.ref_max_nodes - 1) / 2
+
                 for _ in range(samples_per_task):
                     g, logprob_policy = sample_with_logprob(self.policy, t_emb)
 
@@ -313,6 +323,14 @@ class RLHFPolicyTrainer:
                         _, logprob_ref = sample_with_logprob(self.ref_policy, t_emb)
                         x, edge_index, batch = self._graph_to_reward_input(g, t_emb)
                         reward = self.reward_model(x, edge_index, batch)   # scalar tensor
+
+                        if self.lambda_eff > 0.0:
+                            num_nodes = g.number_of_nodes()
+                            num_edges = g.number_of_edges()
+                            node_bonus = num_nodes / self.ref_max_nodes
+                            edge_bonus = (num_edges / ref_max_edges if ref_max_edges > 0 else 0.0)
+                            efficiency_bonus = 2 - node_bonus - edge_bonus
+                            reward = reward + self.lambda_eff * efficiency_bonus
 
                     kl = logprob_policy.detach() - logprob_ref
                     sample_logprobs.append(logprob_policy)

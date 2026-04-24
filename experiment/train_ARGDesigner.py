@@ -23,43 +23,42 @@ def train(args, model, dataloader_train, dataloader_validate=None):
         for graphs in dataloader_train:
             optimizer.zero_grad()
 
-            with torch.autograd.set_detect_anomaly(True):
-                # Extract task embeddings from graphs
-                task_embeddings = []
-                for i, g in enumerate(graphs):
-                    if hasattr(g, 'task_embedding'):
-                        task_embeddings.append(g.task_embedding)
-                    elif 'task_embedding' in g.graph:
-                        task_embeddings.append(g.graph['task_embedding'])
-                    else:
-                        raise ValueError(f"Graph {i} missing task_embedding. Please ensure all graphs have task_embedding attribute or graph['task_embedding'].")
+            # Extract task embeddings from graphs
+            task_embeddings = []
+            for i, g in enumerate(graphs):
+                if hasattr(g, 'task_embedding'):
+                    task_embeddings.append(g.task_embedding)
+                elif 'task_embedding' in g.graph:
+                    task_embeddings.append(g.graph['task_embedding'])
+                else:
+                    raise ValueError(f"Graph {i} missing task_embedding. Please ensure all graphs have task_embedding attribute or graph['task_embedding'].")
 
-                # Convert to tensors and ensure all are on device
-                task_embedding_tensors = []
-                for emb in task_embeddings:
-                    if isinstance(emb, torch.Tensor):
-                        task_embedding_tensors.append(emb.to(args.device))
-                    else:
-                        task_embedding_tensors.append(torch.tensor(emb, device=args.device).float())
+            # Convert to tensors and ensure all are on device
+            task_embedding_tensors = []
+            for emb in task_embeddings:
+                if isinstance(emb, torch.Tensor):
+                    task_embedding_tensors.append(emb.to(args.device))
+                else:
+                    task_embedding_tensors.append(torch.tensor(emb, device=args.device).float())
 
-                # Stack all embeddings
-                task_embedding = torch.stack(task_embedding_tensors)
+            # Stack all embeddings
+            task_embedding = torch.stack(task_embedding_tensors)
 
-                log_ll, batch_role_accuracy = model(graphs, task_embedding)
-                loss = -torch.mean(log_ll)
+            log_ll, batch_role_accuracy = model(graphs, task_embedding)
+            loss = -torch.mean(log_ll)
 
-                role_accuracy_sum += batch_role_accuracy
+            role_accuracy_sum += batch_role_accuracy
 
-                if torch.isnan(loss):
-                    print('NaN loss detected, skipping batch')
-                    continue
+            if torch.isnan(loss):
+                print('NaN loss detected, skipping batch')
+                continue
 
-                loss.backward()
+            loss.backward()
 
-                if args.clip:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if args.clip:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-                optimizer.step()
+            optimizer.step()
 
             loss_sum += loss.item()
             batch_count += 1

@@ -309,13 +309,15 @@ class PreferencePairDataset(Dataset):
         self,
         data_dir: "Union[str, List[str]]",
         exclude_both_wrong: bool = False,
+        exclude_both_correct: bool = False,
     ):
         dirs: List[str] = [data_dir] if isinstance(data_dir, str) else list(data_dir)
 
         all_shard_paths: List[str] = []
         for d in dirs:
             paths = sorted(
-                os.path.join(d, f) for f in os.listdir(d) if f.endswith(".pkl")
+                os.path.join(d, f) for f in os.listdir(d)
+                if f.startswith("shard_") and f.endswith(".pkl")
             )
             if not paths:
                 print(f"  [warn] No .pkl shards found in {d}")
@@ -329,7 +331,8 @@ class PreferencePairDataset(Dataset):
         # Build flat index: (shard_path, local_idx)
         self._index: List[Tuple[str, int]] = []
         self._shard_cache: Dict[str, List[PreferencePair]] = {}
-        n_excluded = 0
+        n_excluded_wrong = 0
+        n_excluded_correct = 0
 
         # Stats for logging — per-directory and overall
         from collections import defaultdict, Counter
@@ -352,9 +355,14 @@ class PreferencePairDataset(Dataset):
             s["shards"] += 1
 
             for i, pair in enumerate(shard):
-                both_wrong = not pair.chosen_is_correct and not pair.rejected_is_correct
+                both_wrong   = not pair.chosen_is_correct and not pair.rejected_is_correct
+                both_correct = pair.chosen_is_correct and pair.rejected_is_correct
                 if exclude_both_wrong and both_wrong:
-                    n_excluded += 1
+                    n_excluded_wrong += 1
+                    s["excluded"] += 1
+                    continue
+                if exclude_both_correct and both_correct:
+                    n_excluded_correct += 1
                     s["excluded"] += 1
                     continue
                 self._index.append((path, i))
@@ -365,7 +373,7 @@ class PreferencePairDataset(Dataset):
                     s["correct_vs_wrong"] += 1
                 elif not pair.chosen_is_correct and pair.rejected_is_correct:
                     s["wrong_vs_correct"] += 1
-                elif pair.chosen_is_correct and pair.rejected_is_correct:
+                elif both_correct:
                     s["both_correct"] += 1
                 else:
                     s["both_wrong"] += 1
@@ -386,9 +394,14 @@ class PreferencePairDataset(Dataset):
                 f"both-wrong={s['both_wrong']}\n"
                 + (f"         domains: {domain_str}" if domain_str else "")
             )
+        excluded_parts = []
+        if n_excluded_wrong:
+            excluded_parts.append(f"{n_excluded_wrong} both-wrong excluded")
+        if n_excluded_correct:
+            excluded_parts.append(f"{n_excluded_correct} both-correct excluded")
         print(
             f"  Total: {total_pairs} pairs from {len(all_shard_paths)} shards"
-            + (f"  ({n_excluded} both-wrong excluded)" if n_excluded else "")
+            + (f"  ({', '.join(excluded_parts)})" if excluded_parts else "")
         )
         print("  ────────────────────────────────────────────────────────\n")
 

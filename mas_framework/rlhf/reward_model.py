@@ -13,7 +13,17 @@ GNN           : SAGEConv(773→256) + residual → SAGEConv(256→128)
 Pooling       : global mean pool → [B, 128]
 Reward head   : MLP(128→64→1) → scalar reward per graph
 
-Training loss : Bradley-Terry  L = -log σ(r_chosen − r_rejected)
+Training losses
+---------------
+Bradley-Terry : L = -log σ(r_chosen − r_rejected)
+                Pairwise ranking loss — chosen must score above rejected.
+
+BCE           : L = BCE(σ(r_chosen), chosen_is_correct)
+                  + BCE(σ(r_rejected), rejected_is_correct)
+                Treats the reward as P(correct). Each graph is labelled
+                independently (1 = correct, 0 = incorrect). Preferred when
+                graph-size has been removed from the preference score so that
+                correctness is the only signal.
 
 Note on structural features
 ---------------------------
@@ -117,6 +127,36 @@ class GraphRewardModel(nn.Module):
         When weights is None reduces to the standard unweighted mean.
         """
         per_pair = -F.logsigmoid(chosen_reward - rejected_reward)   # [B]
+        if weights is not None:
+            per_pair = per_pair * weights
+        return per_pair.mean()
+
+    @staticmethod
+    def bce_loss(
+        chosen_reward: torch.Tensor,             # [B]
+        rejected_reward: torch.Tensor,           # [B]
+        chosen_is_correct: torch.Tensor,         # [B] bool or float ∈ {0, 1}
+        rejected_is_correct: torch.Tensor,       # [B] bool or float ∈ {0, 1}
+        weights: Optional[torch.Tensor] = None,  # [B] per-pair importance weights
+    ) -> torch.Tensor:
+        """
+        Treats the reward as a logit for P(graph is correct).
+
+        L = mean( w_i * [ BCE(r_chosen_i,  chosen_label_i)
+                        + BCE(r_rejected_i, rejected_label_i) ] )
+
+        Unlike Bradley-Terry, each graph is labelled independently, so
+        both-correct and both-wrong pairs also provide gradient signal
+        (pushing correct graphs up and incorrect graphs down).
+        """
+        chosen_labels   = chosen_is_correct.float()
+        rejected_labels = rejected_is_correct.float()
+
+        per_pair = (
+            F.binary_cross_entropy_with_logits(chosen_reward,   chosen_labels,   reduction="none")
+            + F.binary_cross_entropy_with_logits(rejected_reward, rejected_labels, reduction="none")
+        )  # [B]
+
         if weights is not None:
             per_pair = per_pair * weights
         return per_pair.mean()

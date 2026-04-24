@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from mas_framework.graph.graph import Graph, TestGraph
-from sentence_transformers import SentenceTransformer
+from mas_framework.llm.profile_embedding import get_sentence_model
 from experiment.args import Args
 from experiment.model import ARGDesigner
 from experiment import process_dataset as gdata
@@ -75,6 +75,13 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Build D_eff and fine-tune ARGDesigner (Phase 2)"
     )
+    p.add_argument('--phase', choices=['all', 'build_deff', 'finetune'], default='all',
+                   help=(
+                       'all        — build D_eff then run NN fine-tuning (default, legacy). '
+                       'build_deff — only build D_eff via LLM inference (vLLM must be running). '
+                       'finetune   — only run NN fine-tuning on existing D_eff (no vLLM needed, '
+                       '             can use GPU freely since vLLM is stopped).'
+                   ))
     p.add_argument('--dataset', required=True,
                    choices=['gsm8k', 'aqua', 'multiarith', 'svamp', 'humaneval', 'mmlu'])
     p.add_argument('--dataset_json', required=True,
@@ -164,7 +171,7 @@ async def generate_pruned_data(args, dataset: list, output_dir: str, rlhf_dir: s
     print("\n" + "=" * 20 + f" D_pruned ({args.dataset}) " + "=" * 20)
     model = load_model(args.checkpoint_dir)
     model.eval()
-    sentence_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    sentence_model = get_sentence_model()
     role_desc = _get_role_description(args.dataset)
     decision_method = _get_decision_method(args.dataset)
 
@@ -194,7 +201,12 @@ async def generate_pruned_data(args, dataset: list, output_dir: str, rlhf_dir: s
         )
         async with sem:
             try:
-                result = await tg.arun({'task': task_text}, num_rounds=1)
+                result = await asyncio.wait_for(
+                    tg.arun({'task': task_text}, num_rounds=1),
+                    timeout=1200,
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 pbar.update(1)
                 return
@@ -220,7 +232,10 @@ async def generate_pruned_data(args, dataset: list, output_dir: str, rlhf_dir: s
                  'is_correct': False, 'question': task_text},
             )
 
-    await asyncio.gather(*(_prune_one(idx, r) for idx, r in enumerate(dataset)))
+    await asyncio.gather(
+        *(_prune_one(idx, r) for idx, r in enumerate(dataset)),
+        return_exceptions=True,
+    )
     pbar.close()
     print(f"D_pruned done: {saved} graphs saved")
     return saved
@@ -234,6 +249,10 @@ async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: s
     """
     Evaluate simple topology graphs (Chain / Star / Layered).
     Saves correct graphs to output_dir and incorrect graphs to rlhf_dir (if provided).
+
+    All (config × task) combinations are dispatched in a single asyncio.gather so
+    the vLLM server receives requests from every topology at once rather than
+    waiting for one config to finish before starting the next.
     """
     print("\n" + "=" * 20 + f" D_simple ({args.dataset}) " + "=" * 20)
     role_desc = _get_role_description(args.dataset)
@@ -242,12 +261,14 @@ async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: s
     configs = get_simple_configs()
     saved = 0
 
+    # Pre-build one graph template per config (roles sampled once per topology).
+    config_graphs: dict = {}
     for mode, agent_num in configs:
         print(f"  Config: {mode}-{agent_num}")
         kwargs = get_kwargs(mode, agent_num)
         roles = random.choices(list(role_desc.keys()), k=agent_num)
         kwargs['node_kwargs'] = [{'role': r} for r in roles]
-        graph = Graph(
+        config_graphs[(mode, agent_num)] = Graph(
             domain=args.dataset,
             llm_name=args.llm_name,
             agent_names=[agent_name] * agent_num,
@@ -255,61 +276,67 @@ async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: s
             **kwargs,
         )
 
-        sem = asyncio.Semaphore(args.batch_size)
-        pbar = tqdm(total=len(dataset), desc=f"{mode}-{agent_num}")
+    # Single semaphore shared across ALL configs × tasks.
+    sem = asyncio.Semaphore(args.batch_size)
+    total = len(configs) * len(dataset)
+    pbar = tqdm(total=total, desc="D_simple (all configs)")
 
-        async def _simple_one(
-            global_idx: int, record: dict,
-            _mode: str = mode, _agent_num: int = agent_num,
-            _graph: Graph = graph,
-        ) -> None:
-            nonlocal saved
-            realized = copy.deepcopy(_graph)
-            input_dict = {'task': record['task']}
-            flow_graph = realized.to_pyg_graph(input_dict)
-            tg = TestGraph(
-                domain=args.dataset,
-                llm_name=args.llm_name,
-                decision_method=decision_method,
-                pyg_data=flow_graph,
+    async def _simple_one(global_idx: int, record: dict, mode: str, agent_num: int) -> None:
+        nonlocal saved
+        realized = copy.deepcopy(config_graphs[(mode, agent_num)])
+        input_dict = {'task': record['task']}
+        flow_graph = realized.to_pyg_graph(input_dict)
+        tg = TestGraph(
+            domain=args.dataset,
+            llm_name=args.llm_name,
+            decision_method=decision_method,
+            pyg_data=flow_graph,
+        )
+        async with sem:
+            try:
+                result = await asyncio.wait_for(
+                    tg.arun(input_dict, args.num_rounds),
+                    timeout=1200,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pbar.update(1)
+                return
+        raw = result
+        if isinstance(raw, (list, tuple)) and raw:
+            raw = raw[0]
+        if not isinstance(raw, str):
+            raw = str(raw)
+        predicted = _get_predict(args.dataset, raw)
+        correct = _is_correct(args.dataset, predicted, record['answer'])
+        label = 'True' if correct else 'False'
+        fname = "_".join([args.dataset, str(global_idx), mode, str(agent_num), label]) + '.pt'
+        if correct:
+            saved += 1
+            save_graph_with_features(
+                flow_graph,
+                os.path.join(output_dir, fname),
+                {'mode': mode, 'agent_nums': agent_num,
+                 'is_correct': True, 'question': record['task']},
             )
-            async with sem:
-                try:
-                    result = await tg.arun(input_dict, args.num_rounds)
-                except Exception:
-                    pbar.update(1)
-                    return
-            raw = result
-            if isinstance(raw, (list, tuple)) and raw:
-                raw = raw[0]
-            if not isinstance(raw, str):
-                raw = str(raw)
-            predicted = _get_predict(args.dataset, raw)
-            correct = _is_correct(args.dataset, predicted, record['answer'])
-            label = 'True' if correct else 'False'
-            fname = "_".join([
-                args.dataset, str(global_idx), _mode, str(_agent_num), label
-            ]) + '.pt'
-            if correct:
-                saved += 1
-                save_graph_with_features(
-                    flow_graph,
-                    os.path.join(output_dir, fname),
-                    {'mode': _mode, 'agent_nums': _agent_num,
-                     'is_correct': True, 'question': record['task']},
-                )
-            elif rlhf_dir:
-                save_graph_with_features(
-                    flow_graph,
-                    os.path.join(rlhf_dir, fname),
-                    {'mode': _mode, 'agent_nums': _agent_num,
-                     'is_correct': False, 'question': record['task']},
-                )
-            pbar.update(1)
+        elif rlhf_dir:
+            save_graph_with_features(
+                flow_graph,
+                os.path.join(rlhf_dir, fname),
+                {'mode': mode, 'agent_nums': agent_num,
+                 'is_correct': False, 'question': record['task']},
+            )
+        pbar.update(1)
 
-        await asyncio.gather(*(_simple_one(i, r) for i, r in enumerate(dataset)))
-        pbar.close()
-
+    # All configs × all tasks in one gather — vLLM server sees the full request
+    # fan-out immediately instead of one config's worth at a time.
+    await asyncio.gather(*(
+        _simple_one(i, r, mode, agent_num)
+        for mode, agent_num in configs
+        for i, r in enumerate(dataset)
+    ), return_exceptions=True)
+    pbar.close()
     print(f"D_simple done: {saved} graphs saved")
     return saved
 
@@ -342,10 +369,13 @@ def generate_replay_data(cold_start_dir: str, output_dir: str, replay_ratio: flo
 # Phase-2 fine-tuning
 # ---------------------------------------------------------------------------
 
-def run_finetuning(args, d_eff_dir: str):
+def run_finetuning(args, d_eff_dir: str, device: str = 'cpu'):
     """
     Load the Phase-1 ARGDesigner checkpoint and fine-tune it on D_eff.
     Saves ef_best_model.pth to args.output_dir.
+
+    device: 'cpu' when vLLM is still running (phase='all'),
+            args.device (CUDA) when vLLM has been stopped (phase='finetune').
     """
     print("\n" + "=" * 20 + f" Phase-2 Fine-tuning ({args.dataset}) " + "=" * 20)
 
@@ -375,7 +405,10 @@ def run_finetuning(args, d_eff_dir: str):
     finetune_args.epochs         = args.finetune_epochs
     finetune_args.batch_size     = args.train_batch_size
     finetune_args.seed           = args.seed
-    finetune_args.device         = args.device
+    # device is caller-controlled:
+    #   'cpu'  — when vLLM server is still resident in GPU memory (phase='all').
+    #   CUDA   — when vLLM has been stopped before this stage (phase='finetune').
+    finetune_args.device         = device
     finetune_args.pretrain       = False
     finetune_args.model_name     = 'ef_best_model.pth'
     finetune_args.save_model     = True
@@ -407,9 +440,9 @@ def run_finetuning(args, d_eff_dir: str):
         collate_fn=lambda x: x,
     )
 
-    # Build model and load Phase-1 weights
-    model = ARGDesigner(finetune_args, stats).to(args.device)
-    ckpt = torch.load(best_ckpt_path, map_location=args.device)
+    # Build model and load Phase-1 weights.
+    model = ARGDesigner(finetune_args, stats).to(finetune_args.device)
+    ckpt = torch.load(best_ckpt_path, map_location=finetune_args.device)
     model.load_state_dict(ckpt['model_state_dict'])
     print(f"Loaded Phase-1 weights from: {best_ckpt_path}")
     print(f"Fine-tuning for {args.finetune_epochs} epochs at lr={args.finetune_lr} ...")
@@ -461,26 +494,70 @@ async def main():
     finetune_dataset = [all_records[i] for i in finetune_indices]
     print(f"Finetune subset: {len(finetune_dataset)} tasks")
 
-    # ---- Build D_eff --------------------------------------------------------
-    await generate_pruned_data(args, finetune_dataset, d_eff_dir, rlhf_dir)
-    await generate_simple_data(args, finetune_dataset, d_eff_dir, rlhf_dir)
-    generate_replay_data(args.cold_start_dir, d_eff_dir, args.replay_ratio)
+    # ---- Build D_eff (phases: 'all' or 'build_deff') ------------------------
+    # D_pruned and D_simple are independent — run them concurrently so the
+    # vLLM server handles requests from both sources at the same time.
+    if args.phase in ('all', 'build_deff'):
+        _d_results = await asyncio.gather(
+            generate_pruned_data(args, finetune_dataset, d_eff_dir, rlhf_dir),
+            generate_simple_data(args, finetune_dataset, d_eff_dir, rlhf_dir),
+            return_exceptions=True,
+        )
+        pruned_count = _d_results[0] if isinstance(_d_results[0], int) else 0
+        simple_count = _d_results[1] if isinstance(_d_results[1], int) else 0
+        if isinstance(_d_results[0], BaseException):
+            print(f"WARNING: D_pruned raised {type(_d_results[0]).__name__}: {_d_results[0]}")
+        if isinstance(_d_results[1], BaseException):
+            print(f"WARNING: D_simple raised {type(_d_results[1]).__name__}: {_d_results[1]}")
+        generate_replay_data(args.cold_start_dir, d_eff_dir, args.replay_ratio)
 
-    pt_count = len([f for f in os.listdir(d_eff_dir) if f.endswith('.pt')])
-    print(f"\nD_eff total: {pt_count} graphs in {d_eff_dir}")
+        pt_count = len([f for f in os.listdir(d_eff_dir) if f.endswith('.pt')])
+        print(f"\nD_eff total: {pt_count} graphs in {d_eff_dir}")
 
-    # ---- Phase-2 training ---------------------------------------------------
-    run_finetuning(args, d_eff_dir)
+    # ---- Phase-2 NN fine-tuning (phases: 'all' or 'finetune') ---------------
+    if args.phase in ('all', 'finetune'):
+        # When phase='finetune' the caller has already stopped vLLM, so we can
+        # use CUDA freely.  When phase='all' vLLM may still be running, so
+        # force CPU to avoid GPU memory contention.
+        finetune_device = args.device if args.phase == 'finetune' else 'cpu'
+        run_finetuning(args, d_eff_dir, device=finetune_device)
 
-    print(f"\nFine-tuning pipeline complete for {args.dataset}.")
-    print(f"  D_eff data : {d_eff_dir}")
-    print(f"  Final model: {os.path.join(args.output_dir, 'ef_best_model.pth')}")
+    # ---- Summary ------------------------------------------------------------
+    if args.phase == 'build_deff':
+        print(f"\nBuild D_eff complete for {args.dataset}.")
+        print(f"  D_eff data : {d_eff_dir}")
+    elif args.phase == 'finetune':
+        print(f"\nNN fine-tuning complete for {args.dataset}.")
+        print(f"  Final model: {os.path.join(args.output_dir, 'ef_best_model.pth')}")
+    else:  # 'all'
+        print(f"\nFine-tuning pipeline complete for {args.dataset}.")
+        print(f"  D_eff data : {d_eff_dir}")
+        print(f"  Final model: {os.path.join(args.output_dir, 'ef_best_model.pth')}")
+
+    # Cancel any orphaned httpx connection-pool tasks left by asyncio.wait_for
+    # timeouts, to avoid hanging in asyncio.run() shutdown.
+    _current = asyncio.current_task()
+    _pending = [t for t in asyncio.all_tasks() if t is not _current]
+    if _pending:
+        for t in _pending:
+            t.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*_pending, return_exceptions=True),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            pass
 
 
 def main_cli():
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+    # Force-exit to bypass asyncio shutdown hang: httpx connection-pool background
+    # tasks can keep the event loop alive indefinitely after all work is done,
+    # preventing the pipeline script from proceeding to the next stage.
+    os._exit(0)
 
 
 if __name__ == '__main__':

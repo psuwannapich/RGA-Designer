@@ -7,6 +7,12 @@ on a separate machine / job.
 
 Output JSONL line format:
     {task_id, task_text, true_answer, num_nodes, num_edges, graph: {nodes, edges}}
+
+Best-of-N sampling (--best_of_n N --rm_checkpoint PATH --role_emb_path PATH):
+    Generate N candidate graphs per task, score each with the reward model,
+    keep the graph with the highest reward score.  Only one graph per task is
+    written to the output file (the selected best), so the downstream
+    benchmark_pregraph.py step is unchanged.
 """
 
 import os
@@ -14,6 +20,7 @@ import sys
 import json
 import time
 import math
+import pickle
 import torch
 import random
 import argparse
@@ -23,7 +30,7 @@ from tqdm import tqdm
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from sentence_transformers import SentenceTransformer
+from mas_framework.llm.profile_embedding import get_sentence_model
 from experiment.utils import load_model, generate_graph
 
 
@@ -41,6 +48,10 @@ def parse_args():
                    help="Path to dataset file (or data_dir for MMLU)")
     p.add_argument('--task_split_path', type=str, default=None,
                    help="Task split JSON; if absent, all samples are used")
+    p.add_argument('--split_key', type=str, default='test_indices',
+                   help="Comma-separated key(s) from task_split_path to select tasks "
+                        "(union when multiple). E.g. 'base_tasks_indices,finetune_tasks_indices' "
+                        "for the training set. (default: test_indices)")
     p.add_argument('--output_file', type=str, required=True,
                    help="JSONL output path for generated graphs")
     p.add_argument('--limit', type=int, default=None,
@@ -48,11 +59,104 @@ def parse_args():
     p.add_argument('--batch_size', type=int, default=64,
                    help="Flush checkpoint to disk every N samples")
     p.add_argument('--seed', type=int, default=42)
+    # ---- Best-of-N arguments ------------------------------------------------
+    p.add_argument('--best_of_n', type=int, default=1,
+                   help="Number of candidate graphs to sample per task. "
+                        "The one with the highest reward model score is kept. "
+                        "Requires --rm_checkpoint and --role_emb_path. (default: 1 = disabled)")
+    p.add_argument('--rm_checkpoint', type=str, default=None,
+                   help="Path to trained GraphRewardModel checkpoint (.pth). "
+                        "Required when --best_of_n > 1.")
+    p.add_argument('--role_emb_path', type=str, default=None,
+                   help="Path to precomputed_role_embeddings.pkl for this dataset. "
+                        "Required when --best_of_n > 1.")
+    p.add_argument('--bon_temperature', type=float, default=1.2,
+                   help="Sampling temperature used when generating the N candidates. "
+                        "Values > 1.0 increase diversity across candidates. (default: 1.2)")
     p.add_argument('--no_ef', action='store_true',
                    help="Use best_model.pth instead of ef_best_model.pth")
     p.add_argument('--model_type', type=str, default='arg_designer',
                    help="Label of the graph generator model (logged in output)")
     return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Best-of-N helpers
+# ---------------------------------------------------------------------------
+
+def load_best_of_n_components(rm_checkpoint: str, role_emb_path: str, device: torch.device):
+    """Load reward model and role embeddings for Best-of-N scoring."""
+    from mas_framework.rlhf.reward_trainer import load_reward_model
+
+    print(f"  [BoN] Loading reward model from {rm_checkpoint}")
+    rm = load_reward_model(rm_checkpoint, device)
+    rm.eval()
+
+    print(f"  [BoN] Loading role embeddings from {role_emb_path}")
+    with open(role_emb_path, "rb") as f:
+        role_embs = pickle.load(f)
+
+    return rm, role_embs
+
+
+def score_graph_with_rm(rm, nx_graph, task_emb_np: np.ndarray,
+                        role_embs: dict, device: torch.device) -> float:
+    """Score a single NetworkX graph with the reward model.
+
+    Returns the scalar reward.  Returns -inf on any error so the graph
+    is never selected as best.
+    """
+    from mas_framework.rlhf.preference_data import GraphSnapshot
+
+    EMB_DIM = 384
+    nodes_raw = []
+    for n in sorted(nx_graph.nodes()):
+        role = nx_graph.nodes[n].get("role", "Unknown")
+        emb  = role_embs.get(role)
+        if isinstance(emb, torch.Tensor):
+            emb = emb.numpy()
+        emb = np.array(emb, dtype=np.float32) if emb is not None else np.zeros(EMB_DIM, dtype=np.float32)
+        nodes_raw.append({"id": int(n), "role": role, "role_embedding": emb.tolist()})
+
+    snap = GraphSnapshot(
+        nodes=nodes_raw,
+        edges=[[int(u), int(v)] for u, v in nx_graph.edges()],
+        num_nodes=nx_graph.number_of_nodes(),
+    )
+    try:
+        pyg = snap.to_pyg(task_emb_np)
+        return rm.score_single(pyg.x.to(device), pyg.edge_index.to(device))
+    except Exception:
+        return float("-inf")
+
+
+def select_best_graph(model, task_emb_tensor: torch.Tensor, task_emb_np: np.ndarray,
+                      role_description: dict, rm, role_embs: dict,
+                      device: torch.device, n: int, temperature: float,
+                      question_id=None):
+    """Generate *n* candidate graphs, score each, return the highest-reward one.
+
+    Falls back to a single graph (temperature=1.0) if all scoring attempts fail.
+    """
+    candidates = []
+    for _ in range(n):
+        graphs = generate_graph(model, task_emb_tensor, role_description,
+                                question_id=question_id, temperature=temperature)
+        if graphs:
+            candidates.append(graphs[0])
+
+    if not candidates:
+        # Absolute fallback: one graph at default temperature
+        graphs = generate_graph(model, task_emb_tensor, role_description, question_id)
+        return graphs[0] if graphs else None
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    scores = [score_graph_with_rm(rm, g, task_emb_np, role_embs, device)
+              for g in candidates]
+    best_idx = int(np.argmax(scores))
+    return candidates[best_idx], scores
 
 
 def setup_seed(seed: int):
@@ -67,12 +171,16 @@ def setup_seed(seed: int):
 # Dataset loading
 # ---------------------------------------------------------------------------
 
-def load_dataset(dataset: str, dataset_path: str, task_split_path: str):
-    """Return (records, test_indices, role_description).
+def load_dataset(dataset: str, dataset_path: str, task_split_path: str,
+                 split_key: str = 'test_indices'):
+    """Return (records, selected_indices, role_description).
 
     Each record dict has at minimum:
         task_text   : str
         true_answer : str
+
+    split_key may be comma-separated (e.g. 'base_tasks_indices,finetune_tasks_indices')
+    in which case the union of those index lists is used, preserving order.
     """
     if dataset == 'gsm8k':
         from mas_framework.tools.reader.readers import JSONLReader
@@ -127,17 +235,32 @@ def load_dataset(dataset: str, dataset_path: str, task_split_path: str):
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
-    # Resolve test indices
+    # Resolve selected indices from task split
     if task_split_path and os.path.exists(task_split_path):
         with open(task_split_path, 'r') as f:
             split = json.load(f)
-        test_indices = split.get('test_indices', list(range(len(records))))
+        keys = [k.strip() for k in split_key.split(',') if k.strip()]
+        # Union of all requested keys, preserving order, deduplicating.
+        seen = set()
+        selected_indices = []
+        for k in keys:
+            if k not in split:
+                print(f"WARNING: split key '{k}' not found in {task_split_path} "
+                      f"(available: {list(split.keys())})")
+                continue
+            for idx in split[k]:
+                if idx not in seen:
+                    seen.add(idx)
+                    selected_indices.append(idx)
+        if not selected_indices:
+            print(f"WARNING: no indices found for split_key={split_key!r} — using all samples.")
+            selected_indices = list(range(len(records)))
     else:
         if task_split_path:
             print(f"No task split at '{task_split_path}' — using all {len(records)} samples.")
-        test_indices = list(range(len(records)))
+        selected_indices = list(range(len(records)))
 
-    return records, test_indices, ROLE_DESCRIPTION  # noqa: F821 (assigned in each branch)
+    return records, selected_indices, ROLE_DESCRIPTION  # noqa: F821 (assigned in each branch)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +284,14 @@ def main():
     args = parse_args()
     setup_seed(args.seed)
 
+    # ---- Validate Best-of-N arguments ---------------------------------------
+    use_bon = args.best_of_n > 1
+    if use_bon:
+        if not args.rm_checkpoint or not os.path.exists(args.rm_checkpoint):
+            raise ValueError("--best_of_n > 1 requires a valid --rm_checkpoint path")
+        if not args.role_emb_path or not os.path.exists(args.role_emb_path):
+            raise ValueError("--best_of_n > 1 requires a valid --role_emb_path path")
+
     ef = not args.no_ef
     ckpt_name = 'ef_best_model.pth' if ef else 'best_model.pth'
     print("=" * 60)
@@ -168,21 +299,34 @@ def main():
     print(f"  Checkpoint       : {args.model_path}/{ckpt_name}")
     print(f"  Dataset          : {args.dataset}")
     print(f"  Output           : {args.output_file}")
+    if use_bon:
+        print(f"  Best-of-N        : N={args.best_of_n}  temperature={args.bon_temperature}")
+        print(f"  Reward model     : {args.rm_checkpoint}")
     print("=" * 60)
+
     print(f"Loading ARGDesigner ({ckpt_name}) ...")
     model = load_model(args.model_path, ef=ef)
     model.eval()
+    rm_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    sentence_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    # Load Best-of-N components if needed
+    rm, role_embs = (None, None)
+    if use_bon:
+        rm, role_embs = load_best_of_n_components(
+            args.rm_checkpoint, args.role_emb_path, rm_device
+        )
+
+    sentence_model = get_sentence_model()
 
     all_records, test_indices, role_description = load_dataset(
-        args.dataset, args.dataset_path, args.task_split_path
+        args.dataset, args.dataset_path, args.task_split_path,
+        split_key=args.split_key,
     )
     dataset = [all_records[i] for i in test_indices]
     if args.limit:
         dataset = dataset[:args.limit]
         test_indices = test_indices[:args.limit]
-    print(f"Loaded {len(dataset)} {args.dataset} test samples.")
+    print(f"Loaded {len(dataset)} {args.dataset} samples (split_key={args.split_key!r}).")
 
     # Checkpoint resume
     os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
@@ -203,7 +347,8 @@ def main():
     _wall = time.time()
 
     pbar = tqdm(enumerate(dataset), total=total,
-                desc=f"Generating graphs [{args.dataset}]")
+                desc=f"Generating graphs [{args.dataset}]"
+                     + (f" (BoN={args.best_of_n})" if use_bon else ""))
 
     for i, record in pbar:
         task_id = record.get('_task_id_raw') or f"task_{test_indices[i]}"
@@ -214,14 +359,27 @@ def main():
         true_answer = record['true_answer']
 
         try:
-            emb = torch.tensor(
-                sentence_model.encode(task_text), device=model.args.device
-            ).float()
-            graphs = generate_graph(model, emb, role_description, i)
-            if not graphs:
-                raise RuntimeError("generate_graph returned empty list")
-            g = graphs[0]
-            results.append({
+            emb_np  = sentence_model.encode(task_text).astype(np.float32)
+            emb_tensor = torch.tensor(emb_np, device=model.args.device).float()
+
+            if use_bon:
+                result = select_best_graph(
+                    model, emb_tensor, emb_np,
+                    role_description, rm, role_embs,
+                    rm_device, args.best_of_n,
+                    args.bon_temperature, question_id=i,
+                )
+                g, bon_scores = result if isinstance(result, tuple) else (result, None)
+            else:
+                graphs = generate_graph(model, emb_tensor, role_description, i)
+                if not graphs:
+                    raise RuntimeError("generate_graph returned empty list")
+                g, bon_scores = graphs[0], None
+
+            if g is None:
+                raise RuntimeError("No valid graph generated")
+
+            rec = {
                 'task_id': task_id,
                 'task_text': task_text,
                 'true_answer': true_answer,
@@ -230,7 +388,12 @@ def main():
                 'graph': serialize_graph(g),
                 'num_nodes': g.number_of_nodes(),
                 'num_edges': g.number_of_edges(),
-            })
+            }
+            if bon_scores is not None:
+                rec['bon_scores'] = [round(float(s), 4) for s in bon_scores]
+                rec['bon_n'] = args.best_of_n
+            results.append(rec)
+
         except Exception as e:
             print(f"\nError on {task_id}: {e}")
             results.append({

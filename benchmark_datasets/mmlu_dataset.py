@@ -29,6 +29,9 @@ def mmlu_data_process(data_dir: str, split: str = "test") -> list:
 
     records = []
     for path in csv_files:
+        # Derive subject name from filename: "abstract_algebra_test.csv" → "abstract_algebra"
+        basename = os.path.basename(path)
+        subject = "_".join(basename.split("_")[:-1])  # strip trailing split tag
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             for row in reader:
@@ -44,7 +47,7 @@ def mmlu_data_process(data_dir: str, split: str = "test") -> list:
                     f"Option C: {c}\n"
                     f"Option D: {d}"
                 )
-                records.append({"task": task, "answer": answer.strip().upper()})
+                records.append({"task": task, "answer": answer.strip().upper(), "subject": subject})
     return records
 
 

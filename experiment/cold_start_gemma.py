@@ -249,7 +249,10 @@ async def evaluate_and_save(
 
         async with sem:
             try:
-                result = await tg.arun(input_dict, args.num_rounds)
+                result = await asyncio.wait_for(
+                    tg.arun(input_dict, args.num_rounds),
+                    timeout=1200,
+                )
             except Exception as e:
                 # Don't checkpoint errors so they are retried next run.
                 print(f"  [error] task {global_idx}: {e}")
@@ -513,12 +516,31 @@ async def main():
     print(f"\nTo train ARGDesigner on this data, run:")
     print(f"  python experiment/pretrain.py --dataset {args.dataset} --data_dir {args.output_dir} --output_dir checkpoints/{args.dataset}")
 
+    # Cancel any orphaned httpx connection-pool tasks left by asyncio.wait_for
+    # timeouts, to avoid hanging in asyncio.run() shutdown.
+    _current = asyncio.current_task()
+    _pending = [t for t in asyncio.all_tasks() if t is not _current]
+    if _pending:
+        for t in _pending:
+            t.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*_pending, return_exceptions=True),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            pass
+
 
 def main_cli():
     """Entry point for `uv run cold-start` (defined in pyproject.toml)."""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+    # Force-exit to bypass asyncio shutdown hang: httpx connection-pool background
+    # tasks can keep the event loop alive indefinitely after all work is done,
+    # preventing the pipeline script from proceeding to the next stage.
+    os._exit(0)
 
 
 if __name__ == "__main__":

@@ -231,7 +231,10 @@ async def main():
 
         async with sem:
             try:
-                result = await tg.arun({'task': task_text}, num_rounds=1)
+                result = await asyncio.wait_for(
+                    tg.arun({'task': task_text}, num_rounds=1),
+                    timeout=1200,
+                )
             except Exception as e:
                 print(f"Error executing {task_id}: {e}")
                 _append_result(out_fh, {
@@ -273,7 +276,7 @@ async def main():
         pbar.update(1)
 
     with open(args.output_file, 'a', encoding='utf-8') as out_fh:
-        await asyncio.gather(*(run_one(rec, out_fh) for rec in graphs_data))
+        await asyncio.gather(*(run_one(rec, out_fh) for rec in graphs_data), return_exceptions=True)
 
     pbar.close()
     solved_tasks = counters['solved']
@@ -320,3 +323,5 @@ if __name__ == '__main__':
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+    # Force-exit to bypass asyncio shutdown hang on httpx connection-pool cleanup.
+    os._exit(0)
