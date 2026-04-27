@@ -11,10 +11,15 @@ GRPO + KL objective
 --------------------
 For a group of G graphs sampled per task:
 
-    r_i    = reward_model(G_i, task_emb)         — scalar, no grad
-    A_i    = (r_i − mean_group(r)) / std_group(r) — within-group advantage
-    KL_i   = log π_θ(G_i) − log π_ref(G_i)       — per-trajectory KL estimate
-    loss   = −mean_i[ (A_i − kl_coeff × KL_i) × log π_θ(G_i) ]
+    r_i    = reward_model(G_i, task_emb)          — scalar, no grad
+    A_i    = (r_i − mean_group(r)) / std_group(r)  — within-group advantage
+    KL_i   = log π_θ(G_i) − log π_ref(G_i)        — per-trajectory KL, same graph G_i
+    loss   = −A_i × log π_θ(G_i) + kl_coeff × KL_i
+
+KL_i is estimated by teacher-forcing G_i through the frozen reference policy
+so that both log-probs are evaluated on the same trajectory.  The additive KL
+penalty is stable: it does not multiply by log π_θ (which can be large negative
+for long sequences).  Gradient flows through log π_θ in both terms.
 
 Normalising within the group removes the reward model's arbitrary absolute
 offset and scale, making gradients robust to reward model miscalibration.
@@ -195,6 +200,132 @@ def sample_with_logprob(
     return G, log_prob.squeeze()
 
 
+def compute_logprob_for_graph(
+    model,
+    graph: nx.DiGraph,
+    task_embedding: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Teacher-force *graph* through *model* and return log π(G | task).
+
+    Mirrors sample_with_logprob exactly but, instead of sampling at each
+    decision point, reads the actual choice from *graph*.  Call inside
+    torch.no_grad() when evaluating the frozen reference policy.
+    """
+    device = model.args.device
+    if task_embedding.dim() == 1:
+        task_embedding = task_embedding.unsqueeze(0)
+    task_embedding = task_embedding.to(device)
+
+    num_nodes = graph.number_of_nodes()
+    node_roles = [graph.nodes[i].get("role", "Unknown") for i in range(num_nodes)]
+    edge_set = set(graph.edges())
+
+    role_embeddings_dict_full = model.precomputed_embeddings
+    selected_roles_names = list(role_embeddings_dict_full.keys())
+    selected_role_ids = [model.role_to_id[r] for r in selected_roles_names]
+
+    end_embedding = model.full_embedding_matrix[model.END_TOKEN].unsqueeze(0)
+    candidate_embs = torch.cat(
+        [model.full_embedding_matrix[selected_role_ids], end_embedding], dim=0
+    )
+    temp_end_idx = len(selected_roles_names)
+
+    min_num_node = model.data_statistics.get("min_num_nodes", 2)
+    max_num_node = model.data_statistics.get("max_num_nodes", 10)
+    HAS_EDGE_TOKEN = 1
+    feature_len = model.embedding_dim + model.num_nodes_to_consider * model.len_edge_vec
+
+    processed_role_embs: Dict[str, torch.Tensor] = {
+        r: torch.tensor(e, device=device).float()
+        for r, e in role_embeddings_dict_full.items()
+    }
+
+    log_prob = torch.zeros(1, device=device)
+
+    h_node = torch.zeros(1, 1, model.args.hidden_size_node_level_transformer, device=device)
+    t_proc = model.task_processor(task_embedding)
+
+    start_input = torch.zeros(1, 1, feature_len, device=device)
+    start_input[:, 0, :model.embedding_dim] = t_proc
+    start_input[:, 0, model.embedding_dim + model.len_edge_vec - 2] = 1
+    start_input = model.node_project(start_input)
+    _, h_node = model.node_gru(start_input, h_node)
+
+    node_embeddings: List[torch.Tensor] = []
+
+    for i in range(max_num_node + 1):
+        cur_input = torch.zeros(1, 1, feature_len, device=device)
+        if i > 0 and node_embeddings:
+            prev_embs = torch.stack(node_embeddings, dim=0)
+            _, h_agg = model.prev_nodes_aggregator(prev_embs.unsqueeze(0))
+            h_node_hist = h_agg.squeeze(0).squeeze(0)
+            gate = torch.sigmoid(
+                torch.sum(h_node_hist * t_proc[0]) / model.embedding_dim
+            )
+            combined = (1 - gate) * h_node_hist + gate * t_proc[0]
+            cur_input[0, 0, :model.embedding_dim] = combined
+
+        proj_in = model.node_project(cur_input)
+        node_out, h_node = model.node_gru(proj_in, h_node)
+
+        pred_emb = model.output_node(node_out)
+        proc_cand = model.role_processor(candidate_embs)
+        scores = torch.matmul(pred_emb.squeeze(1), proc_cand.t())
+        if i < min_num_node:
+            inf_mask = scores.new_zeros(scores.shape)
+            inf_mask[:, temp_end_idx] = float("-inf")
+            scores = scores + inf_mask
+        probs = F.softmax(scores, dim=-1)
+
+        # Teacher-forcing: use the actual token from the graph
+        if i >= num_nodes:
+            actual_idx = temp_end_idx
+        else:
+            role = node_roles[i]
+            actual_idx = (
+                selected_roles_names.index(role)
+                if role in selected_roles_names
+                else temp_end_idx
+            )
+
+        log_prob = log_prob + torch.log(probs[0, actual_idx] + EPS)
+
+        if actual_idx == temp_end_idx:
+            break
+
+        role = node_roles[i]
+        role_emb = processed_role_embs.get(
+            role, torch.zeros(model.embedding_dim, device=device)
+        )
+        node_embeddings.append(role_emb.clone())
+
+        active_out = model.embedding_node_to_edge(node_out)
+        edge_input = torch.zeros(1, 1, model.len_edge_vec, device=device)
+        edge_input[:, 0, model.len_edge_vec - 2] = 1
+        edge_input = model.edge_project(edge_input)
+        h_edge = active_out
+
+        for j in range(min(model.num_nodes_to_consider, i)):
+            if j > 0:
+                edge_input = model.edge_project(edge_input)
+            edge_out, h_edge = model.edge_gru(edge_input, h_edge)
+            edge_pred = model.output_edge(edge_out).view(1, model.len_edge_vec)
+            p_edge = edge_pred[0, HAS_EDGE_TOKEN]
+
+            u, v = i - j - 1, i
+            exists = 1 if (u, v) in edge_set else 0
+            log_prob = log_prob + (
+                exists * torch.log(p_edge + EPS)
+                + (1 - exists) * torch.log(1 - p_edge + EPS)
+            )
+            next_input = torch.zeros(1, 1, model.len_edge_vec, device=device)
+            next_input[:, 0, exists] = 1
+            edge_input = next_input
+
+    return log_prob.squeeze()
+
+
 # ---------------------------------------------------------------------------
 # Policy trainer
 # ---------------------------------------------------------------------------
@@ -309,7 +440,7 @@ class RLHFPolicyTrainer:
 
                 # Collect all samples for this task first.
                 self.policy.train()
-                sample_logprobs, sample_rewards, sample_kls = [], [], []
+                sample_logprobs, sample_rewards, sample_logprob_refs = [], [], []
 
                 # Pre-compute max possible edges for an autoregressive DAG
                 # with ref_max_nodes nodes: each node i can connect to all i
@@ -320,7 +451,9 @@ class RLHFPolicyTrainer:
                     g, logprob_policy = sample_with_logprob(self.policy, t_emb)
 
                     with torch.no_grad():
-                        _, logprob_ref = sample_with_logprob(self.ref_policy, t_emb)
+                        # Teacher-force the same graph G_i through the frozen reference
+                        # policy so KL_i = log π_θ(G_i) − log π_ref(G_i) is on-trajectory.
+                        logprob_ref = compute_logprob_for_graph(self.ref_policy, g, t_emb)
                         x, edge_index, batch = self._graph_to_reward_input(g, t_emb)
                         reward = self.reward_model(x, edge_index, batch)   # scalar tensor
 
@@ -329,13 +462,12 @@ class RLHFPolicyTrainer:
                             num_edges = g.number_of_edges()
                             node_bonus = num_nodes / self.ref_max_nodes
                             edge_bonus = (num_edges / ref_max_edges if ref_max_edges > 0 else 0.0)
-                            efficiency_bonus = 2 - node_bonus - edge_bonus
+                            efficiency_bonus = 1 - node_bonus - edge_bonus
                             reward = reward + self.lambda_eff * efficiency_bonus
 
-                    kl = logprob_policy.detach() - logprob_ref
                     sample_logprobs.append(logprob_policy)
                     sample_rewards.append(reward.detach())
-                    sample_kls.append(kl)
+                    sample_logprob_refs.append(logprob_ref)  # detached (from no_grad)
 
                 # GRPO: normalise within the group (per-task mean and std).
                 # Clamp std from below at 0.01 so near-identical rewards produce
@@ -350,9 +482,13 @@ class RLHFPolicyTrainer:
                     epoch_rewards.append(r.item())
 
                 step_losses = []
-                for logprob_policy, advantage, kl in zip(sample_logprobs, advantages, sample_kls):
-                    # GRPO loss: −(A_i − β KL_i) × log π_θ(G_i)
-                    loss = -(advantage - self.kl_coeff * kl) * logprob_policy
+                for logprob_policy, advantage, logprob_ref in zip(
+                    sample_logprobs, advantages, sample_logprob_refs
+                ):
+                    # KL_i = log π_θ(G_i) − log π_ref(G_i), gradient through logprob_policy.
+                    # Additive penalty: loss = −A_i × log π_θ + β × KL_i
+                    kl = logprob_policy - logprob_ref
+                    loss = -advantage * logprob_policy + self.kl_coeff * kl
                     step_losses.append(loss)
 
                 if step_losses:

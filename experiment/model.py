@@ -388,10 +388,13 @@ class ARGDesigner(nn.Module):
         for i in range(len(self.id_to_role)):
             role_name = self.id_to_role[i]
             if role_name in self.precomputed_embeddings:
-                role_tensors.append(self.precomputed_embeddings[role_name])
+                emb = self.precomputed_embeddings[role_name]
+                if not isinstance(emb, torch.Tensor):
+                    emb = torch.tensor(emb)
+                role_tensors.append(emb.view(self.embedding_dim))   # ensure [384]
             else:
                 print(f"Warning: Role '{role_name}' not in embeddings, using random vector")
-                role_tensors.append(torch.randn(1, self.embedding_dim))
+                role_tensors.append(torch.randn(self.embedding_dim))  # [384]
         base_role_embeddings = torch.stack(role_tensors, dim=0)
         start_embedding = torch.zeros(1, self.embedding_dim)
         end_embedding = torch.zeros(1, self.embedding_dim)

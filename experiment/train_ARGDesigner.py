@@ -83,7 +83,8 @@ def train(args, model, dataloader_train, dataloader_validate=None):
                     save_content = {
                         'model_state_dict': model.state_dict(),
                         'data_statistics': model.data_statistics,
-                        'args': args.__dict__
+                        'args': {k: v for k, v in args.__dict__.items()
+                                 if k != 'parser'}
                     }
                     torch.save(save_content, best_model_path)
                     print(
