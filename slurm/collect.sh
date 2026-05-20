@@ -80,9 +80,10 @@ MIN_AGENTS="${MIN_AGENTS:-2}"
 MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 W_CORRECT="${W_CORRECT:-0.6}"
 W_SIZE="${W_SIZE:-0.2}"
-W_TOKEN="${W_TOKEN:-0.2}"
+W_EDGE="${W_EDGE:-0.2}"
 PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
+TASK_CONCURRENCY="${TASK_CONCURRENCY:-4}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-600}"
 SEED="${SEED:-42}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
@@ -117,9 +118,10 @@ uv run rlhf \
     --max_agents     "$MAX_AGENTS" \
     --w_correct      "$W_CORRECT" \
     --w_size         "$W_SIZE" \
-    --w_token        "$W_TOKEN" \
+    --w_edge         "$W_EDGE" \
     --pair_margin    "$PAIR_MARGIN" \
     --checkpoint_every "$CHECKPOINT_EVERY" \
+    --task_concurrency "$TASK_CONCURRENCY" \
     --llm_timeout    "$LLM_TIMEOUT" \
     --seed           "$SEED" \
     --sample_temperatures $SAMPLE_TEMPERATURES \

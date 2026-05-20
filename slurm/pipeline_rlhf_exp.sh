@@ -179,7 +179,7 @@ GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 EVAL_BATCH="${EVAL_BATCH:-8}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
-BEST_OF_N="${BEST_OF_N:-5}"
+BEST_OF_N="${BEST_OF_N:-1}"
 BON_TEMPERATURE="${BON_TEMPERATURE:-1}"
 
 # ---- Directory layout -------------------------------------------------------

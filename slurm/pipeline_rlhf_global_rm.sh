@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH -p gpu
 #SBATCH --time=10:00:00
 #SBATCH --mail-type=END,FAIL
@@ -33,6 +33,9 @@
 #   POLICY_NUM_TASKS   tasks to sample for policy train  (default: 200)
 #   EVAL_BATCH         benchmark batch size              (default: 2)
 #   RESULTS_ROOT       results sub-dir                  (default: benchmark_results)
+#   BEST_OF_N          BoN graph selection at inference  (default: 5)
+#   BON_TEMPERATURE    sampling temperature for BoN      (default: 1)
+#   ARG_RUN            ARG experiment run index for role embeddings (default: 0)
 #   RUN_NAME           unique name for this run; namespaces policy checkpoints,
 #                      graphs, state flags, and global RM so re-runs with
 #                      different settings never overwrite each other.
@@ -92,7 +95,8 @@ RM_BATCH_SIZE="${RM_BATCH_SIZE:-32}"
 RM_HIDDEN_DIM="${RM_HIDDEN_DIM:-256}"
 RM_OUTPUT_DIM="${RM_OUTPUT_DIM:-128}"
 RM_VAL_FRACTION="${RM_VAL_FRACTION:-0.1}"
-BOTH_WRONG_WEIGHT="${BOTH_WRONG_WEIGHT:-0.2}"
+BOTH_WRONG_WEIGHT="${BOTH_WRONG_WEIGHT:-0}"
+BOTH_CORRECT_WEIGHT="${BOTH_CORRECT_WEIGHT:-0.1}"
 
 # Policy (per-dataset, uses global RM)
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
@@ -103,12 +107,15 @@ POLICY_LR="${POLICY_LR:-5e-6}"
 KL_COEFF="${KL_COEFF:-0.1}"
 SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-2}"
 
-# Benchmark
+# Benchmark / graph generation
 EVAL_BATCH="${EVAL_BATCH:-2}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
 GRAPHS_ROOT="${GRAPHS_ROOT:-graphs}"
 LIMIT="${LIMIT:-}"
 NO_EF="${NO_EF:-0}"
+BEST_OF_N="${BEST_OF_N:-1}"
+BON_TEMPERATURE="${BON_TEMPERATURE:-1}"
+ARG_RUN="${ARG_RUN:-0}"   # used to locate precomputed_role_embeddings.pkl
 
 # Global reward model checkpoint (namespaced by RUN_NAME)
 GLOBAL_RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/global_${RUN_NAME}/reward_model.pth"
@@ -116,7 +123,7 @@ GLOBAL_RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/global_${RUN_NAME}/
 # ---- vLLM inference server --------------------------------------------------
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
 VLLM_PORT="${VLLM_PORT:-6889}"           # offset from per-dataset port range (6789–6836)
-VLLM_TP="${VLLM_TP:-2}"
+VLLM_TP="${VLLM_TP:-1}"
 VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_temp}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
 VLLM_PID=""
@@ -141,6 +148,7 @@ echo "  Global RM        : $GLOBAL_RM_CHECKPOINT"
 echo "  Policy root      : ${MODEL_SLUG}/${POLICY_ROOT}/<dataset>"
 echo "  RM epochs        : $RM_EPOCHS"
 echo "  Policy epochs    : $POLICY_EPOCHS"
+echo "  Best-of-N        : $([ "${BEST_OF_N:-1}" -gt 1 ] && echo "N=$BEST_OF_N  temp=$BON_TEMPERATURE" || echo "disabled")"
 echo "  Started at       : $(date)"
 echo "════════════════════════════════════════════════"
 
@@ -183,7 +191,8 @@ else
         --rm_hidden_dim  "$RM_HIDDEN_DIM" \
         --rm_output_dim  "$RM_OUTPUT_DIM" \
         --rm_val_fraction "$RM_VAL_FRACTION" \
-        --both_wrong_weight "$BOTH_WRONG_WEIGHT"
+        --both_wrong_weight  "$BOTH_WRONG_WEIGHT" \
+        --both_correct_weight "$BOTH_CORRECT_WEIGHT"
 
     mark_done stage1_train_global_rm
     echo "  ✓ Global reward model → $GLOBAL_RM_CHECKPOINT"
@@ -244,6 +253,22 @@ for i in "${!DATASETS[@]}"; do
 
     # -- Stage 3a: Generate graphs --------------------------------------------
     echo ""
+
+    # Best-of-N: use the global reward model for BoN graph ranking.
+    BON_FLAGS=""
+    if [[ "${BEST_OF_N:-1}" -gt 1 ]]; then
+        COLD_START_DIR="$PROJECT_ROOT/${MODEL_SLUG}/arg/${ARG_RUN}/ColdStartData/${DATASET}"
+        ROLE_EMB_FILE="$COLD_START_DIR/precomputed_role_embeddings.pkl"
+        if [[ ! -f "$GLOBAL_RM_CHECKPOINT" ]]; then
+            echo "WARNING: BEST_OF_N=$BEST_OF_N but global RM checkpoint not found — disabling BoN"
+        elif [[ ! -f "$ROLE_EMB_FILE" ]]; then
+            echo "WARNING: BEST_OF_N=$BEST_OF_N but role embeddings not found: $ROLE_EMB_FILE — disabling BoN"
+        else
+            BON_FLAGS="--best_of_n $BEST_OF_N --bon_temperature $BON_TEMPERATURE --rm_checkpoint $GLOBAL_RM_CHECKPOINT --role_emb_path $ROLE_EMB_FILE"
+            echo "  [BoN] Enabled: N=$BEST_OF_N  temperature=$BON_TEMPERATURE"
+        fi
+    fi
+
     if stage_done "stage3a_graphs_${DATASET}"; then
         echo "▶ [Stage 3a] Generate graphs ($DATASET) ... SKIPPED (already done)"
     else
@@ -259,7 +284,8 @@ for i in "${!DATASETS[@]}"; do
             --model_type   "$MODEL_TYPE" \
             ${TASK_SPLIT_RAW:+--task_split_path "$PROJECT_ROOT/$TASK_SPLIT_RAW"} \
             ${LIMIT:+--limit "$LIMIT"} \
-            $NO_EF_FLAG
+            $NO_EF_FLAG \
+            $BON_FLAGS
 
         mark_done "stage3a_graphs_${DATASET}"
         echo "  ✓ Graphs → $GRAPHS_FILE"

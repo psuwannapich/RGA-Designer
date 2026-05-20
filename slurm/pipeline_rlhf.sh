@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=arg_qwen_rlhf
-#SBATCH --output=logs/qwen_rlhf_%A_%a.out
-#SBATCH --error=logs/qwen_rlhf_%A_%a.err
+#SBATCH --job-name=arg_qwen4_rlhf
+#SBATCH --output=logs/qwen4_rlhf_%A_%a.out
+#SBATCH --error=logs/qwen4_rlhf_%A_%a.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-5          # 0=gsm8k 1=aqua 2=multiarith 3=svamp 4=humaneval 5=mmlu
 #SBATCH -p gpu
-#SBATCH --time=2-00:00:00
+#SBATCH --time=6:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=poomphob.suwannapichat@uni.lu
 
@@ -34,6 +34,8 @@
 # Optional env vars:
 #   HF_MODEL           HuggingFace model ID            (default: Qwen/Qwen3-8B)
 #   DISABLE_THINKING   1 = no-thinking mode (Qwen3)    (default: 1)
+#   RUN_NUM            run number — appended to MODEL_SLUG and offsets VLLM_PORT
+#                      by RUN_NUM*100 to avoid collisions (default: empty)
 #   CHECKPOINT_ROOT    Phase-1/2 checkpoint sub-dir     (default: checkpoints)
 #   RLHF_NUM_TASKS     tasks to sample for collect      (default: 100)
 #   PREFERENCE_ROOT    preference data sub-dir           (default: rlhf_data)
@@ -43,6 +45,8 @@
 #   ARG_MODEL_SAMPLES  unique ARGDesigner graphs per task (optional)
 #   EVAL_BATCH         benchmark batch size              (default: 8)
 #   RESULTS_ROOT       results sub-dir                  (default: benchmark_results)
+#   BEST_OF_N          Best-of-N candidates at graph gen (default: 1 = disabled)
+#   BON_TEMPERATURE    sampling temperature for BoN      (default: 1.2)
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -69,13 +73,34 @@ MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$SLURM_ARRAY_TASK_ID]}}"
 
 # ---- Configuration ----------------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
+# HF_MODEL="${HF_MODEL:-Qwen/Qwen3-8B}"
 # HF_MODEL="${HF_MODEL:-meta-llama/Llama-3.2-3B-Instruct}"
-# HF_MODEL="${HF_MODEL:-google/gemma-3-4b-it}"
+# HF_MODEL="${HF_MODEL:-meta-llama/Llama-3.1-8B}"
 
-MODEL_SLUG="${HF_MODEL//\//-}"
-DISABLE_THINKING="${DISABLE_THINKING:-1}"
-MODEL_SLUG="${MODEL_SLUG}-vllm-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
-export DISABLE_THINKING PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+# ---- Model-family detection -------------------------------------------------
+# Automatically selects the correct vLLM venv, dtype, and chat template.
+# Add more patterns here if supporting additional model families.
+if [[ "$HF_MODEL" == *"Llama"* ]] || [[ "$HF_MODEL" == *"llama"* ]]; then
+    IS_LLAMA=1
+else
+    IS_LLAMA=0
+fi
+
+# Thinking mode is Qwen3-only; disable unconditionally for Llama.
+DISABLE_THINKING="${DISABLE_THINKING:-$([ "$IS_LLAMA" = "1" ] && echo 0 || echo 1)}"
+RUN_NUM="${RUN_NUM:-}"   # run number; must match pipeline_train.sh when auto-submitted
+# If MODEL_SLUG was passed in (e.g. auto-submitted from pipeline_train.sh), use it
+# directly so both scripts share the same directory.  Otherwise derive it the same
+# way as pipeline_train.sh so the directories are consistent.
+if [[ -z "${MODEL_SLUG:-}" ]]; then
+    MODEL_SLUG="${HF_MODEL//\//-}"
+    # Qwen3 slug includes thinking mode; other models omit it.
+    if [[ "$IS_LLAMA" = "0" ]]; then
+        MODEL_SLUG="${MODEL_SLUG}-$([ "${DISABLE_THINKING}" = "1" ] && echo no_thinking || echo thinking)"
+    fi
+    [[ -n "${RUN_NUM}" ]] && MODEL_SLUG="${MODEL_SLUG}/${RUN_NUM}"
+fi
+export DISABLE_THINKING MODEL_SLUG PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 SEED="${SEED:-42}"
 
@@ -84,40 +109,55 @@ RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-100}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
 MIN_AGENTS="${MIN_AGENTS:-2}"
 W_CORRECT="${W_CORRECT:-0.6}"
-W_SIZE="${W_SIZE:-0.2}"
-W_TOKEN="${W_TOKEN:-0.2}"
-PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
+W_SIZE="${W_SIZE:-0.3}"
+W_EDGE="${W_EDGE:-0.1}"
+PAIR_MARGIN="${PAIR_MARGIN:-0.1}"
 PRUNING_RATIO="${PRUNING_RATIO:-0.25}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
-LLM_TIMEOUT="${LLM_TIMEOUT:-1200}"
-SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-1.0 1.5 2.0}"
+TASK_CONCURRENCY="${TASK_CONCURRENCY:-8}"
+INFERENCE_CONCURRENCY="${INFERENCE_CONCURRENCY:-8}"
+LLM_TIMEOUT="${LLM_TIMEOUT:-2400}"
+SAMPLE_TEMPERATURES="${SAMPLE_TEMPERATURES:-0.5 1.0 1.5 2.0}"
 ARG_MODEL_DIR="${ARG_MODEL_DIR:-}"         # defaults to MODEL_DIR after derived paths
 COLDSTART_DIRS="${COLDSTART_DIRS:-}"       # user-specified extra dirs
 ARG_MODEL_SAMPLES="${ARG_MODEL_SAMPLES:-}"
 COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
+DIFFICULTY_FILTER="${DIFFICULTY_FILTER:-0}"  # 1 = drop all-correct tasks before collecting
+MIN_FAIL_RATE="${MIN_FAIL_RATE:-0.05}"        # threshold for difficulty filter
+WEAK_BASELINES="${WEAK_BASELINES:-1}"         # 1 = add 1-agent and over-sized configs
+ROLE_SWEEP="${ROLE_SWEEP:-1}"                 # 1 = enumerate all role combos on fixed topology
+ROLE_SWEEP_TOPOLOGY="${ROLE_SWEEP_TOPOLOGY:-Chain}"
+ROLE_SWEEP_N_AGENTS="${ROLE_SWEEP_N_AGENTS:-2}"      # comma-separated, e.g. "2,3"
+ROLE_SWEEP_MAX_COMBOS="${ROLE_SWEEP_MAX_COMBOS:-}"   # empty = no cap
 
 # Reward model
 RM_ROOT="${RM_ROOT:-rlhf_checkpoints}"
-RM_EPOCHS="${RM_EPOCHS:-20}"
+RM_EPOCHS="${RM_EPOCHS:-30}"
 RM_LR="${RM_LR:-1e-4}"
 RM_BATCH_SIZE="${RM_BATCH_SIZE:-32}"
 RM_HIDDEN_DIM="${RM_HIDDEN_DIM:-256}"
 RM_OUTPUT_DIM="${RM_OUTPUT_DIM:-128}"
 RM_VAL_FRACTION="${RM_VAL_FRACTION:-0.1}"
-BOTH_WRONG_WEIGHT="${BOTH_WRONG_WEIGHT:-0.2}"
+BOTH_WRONG_WEIGHT="${BOTH_WRONG_WEIGHT:-0}"
+BOTH_CORRECT_WEIGHT="${BOTH_CORRECT_WEIGHT:-0}"
 
 # Policy
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
 POLICY_ROOT="${POLICY_ROOT:-rlhf_checkpoints}"
 POLICY_EPOCHS="${POLICY_EPOCHS:-30}"
-POLICY_NUM_TASKS="${POLICY_NUM_TASKS:-200}"
+POLICY_NUM_TASKS="${POLICY_NUM_TASKS:-100}"
 POLICY_LR="${POLICY_LR:-5e-6}"
 KL_COEFF="${KL_COEFF:-0.1}"
-SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-2}"
+SAMPLES_PER_TASK="${SAMPLES_PER_TASK:-4}"
+GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 
 # Benchmark
 EVAL_BATCH="${EVAL_BATCH:-8}"
 RESULTS_ROOT="${RESULTS_ROOT:-benchmark_results}"
+
+# Best-of-N graph selection (inference-time scaling)
+BEST_OF_N="${BEST_OF_N:-5}"           # 1 = disabled; >1 = generate N candidates, keep highest-RM-score
+BON_TEMPERATURE="${BON_TEMPERATURE:-1}"  # diversity temperature for candidate sampling
 
 # Derived paths
 PREFERENCE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${PREFERENCE_ROOT}/${DATASET}"
@@ -132,24 +172,39 @@ ARG_MODEL_DIR="${ARG_MODEL_DIR:-$MODEL_DIR}"
 # ---- vLLM inference server --------------------------------------------------
 # Set USE_VLLM_SERVER=0 to disable and fall back to HuggingFace transformers.
 USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
-VLLM_PORT="${VLLM_PORT:-$((6789 + ${SLURM_ARRAY_TASK_ID:-0}))}"
+VLLM_PORT="${VLLM_PORT:-$((7789 + ${SLURM_ARRAY_TASK_ID:-0} + 21 + ${RUN_NUM:-0} * 100))}"
 VLLM_TP="${VLLM_TP:-1}"                  # tensor-parallel GPUs for the server
-VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_serve}"
-VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
+# Llama (GPTQ) uses llama_serve venv + dtype=auto + built-in chat template.
+# Qwen3 uses vllm_serve venv + dtype=float16 + nonthinking Jinja override.
+if [[ "$IS_LLAMA" = "1" ]]; then
+    VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/llama_serve}"
+    # VLLM_DTYPE="${VLLM_DTYPE:-auto}"
+    VLLM_DTYPE="${VLLM_DTYPE:-float16}"
+    VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"   # use model's built-in Llama template
+else
+    VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-/home/users/psuwannapichat/work_space/vllm_serve}"
+    VLLM_DTYPE="${VLLM_DTYPE:-float16}"
+    VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-${VLLM_SERVE_DIR}/qwen3_nonthinking.jinja}"
+fi
 VLLM_PID=""
 
 _start_vllm_server() {
     echo "▶ Starting vLLM server for '$HF_MODEL' on port $VLLM_PORT ..."
     mkdir -p "$PROJECT_ROOT/logs"
-    ("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL" \
-        --port                   "$VLLM_PORT" \
-        --dtype                  float16 \
-        --trust-remote-code \
-        --max-model-len          16384 \
-        --gpu-memory-utilization 0.9 \
-        --tensor-parallel-size   "$VLLM_TP" \
-        --enforce-eager \
-        --chat-template          "$VLLM_CHAT_TEMPLATE") \
+    local _vllm_cmd=("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL"
+        --port                   "$VLLM_PORT"
+        --dtype                  "$VLLM_DTYPE"
+        --trust-remote-code
+        --max-model-len          "$VLLM_MAX_MODEL_LEN"
+        --gpu-memory-utilization 0.90
+        # --max-num-seqs           8
+        --tensor-parallel-size   "$VLLM_TP"
+        --enforce-eager)
+    # Only pass --chat-template when a custom template is specified (Qwen3).
+    # Llama Instruct models use their built-in template.
+    [[ -n "${VLLM_CHAT_TEMPLATE:-}" ]] && _vllm_cmd+=(--chat-template "$VLLM_CHAT_TEMPLATE")
+    ("${_vllm_cmd[@]}") \
         > "$PROJECT_ROOT/logs/vllm_${SLURM_JOB_ID:-local}.log" 2>&1 &
     VLLM_PID=$!
     echo "  Server PID : $VLLM_PID"
@@ -167,9 +222,44 @@ _start_vllm_server() {
 }
 
 _stop_vllm_server() {
-    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null && echo "  ✓ vLLM server stopped."
+    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null || true
+    echo "  ✓ vLLM server stopped (EXIT trap)."
 }
 trap _stop_vllm_server EXIT
+
+# _ensure_vllm_running — start vLLM if not already alive.
+_ensure_vllm_running() {
+    if [[ "$USE_VLLM_SERVER" != "1" ]]; then return 0; fi
+    if [[ -n "${VLLM_PID:-}" ]] && kill -0 "${VLLM_PID}" 2>/dev/null; then
+        echo "  vLLM server already running (PID ${VLLM_PID})."
+        return 0
+    fi
+    _start_vllm_server
+}
+
+# _ensure_vllm_stopped — kill vLLM and wait for VRAM to be reclaimed before
+# starting NN training stages (reward model, policy fine-tuning).
+_ensure_vllm_stopped() {
+    if [[ "$USE_VLLM_SERVER" != "1" ]]; then return 0; fi
+    if [[ -z "${VLLM_PID:-}" ]] || ! kill -0 "${VLLM_PID}" 2>/dev/null; then
+        echo "  vLLM server not running — nothing to stop."
+        return 0
+    fi
+    echo "▶ Stopping vLLM server (PID ${VLLM_PID}) to free GPU VRAM ..."
+    kill "${VLLM_PID}" 2>/dev/null || true
+    local _waited=0
+    while kill -0 "${VLLM_PID}" 2>/dev/null; do
+        sleep 2; _waited=$(( _waited + 2 ))
+        if (( _waited >= 60 )); then
+            echo "  WARNING: vLLM still alive after 60s — sending SIGKILL ..."
+            kill -9 "${VLLM_PID}" 2>/dev/null || true
+            break
+        fi
+    done
+    VLLM_PID=""
+    echo "  ✓ vLLM server stopped. Waiting 5s for GPU VRAM to be reclaimed ..."
+    sleep 5
+}
 
 # ---- Stage checkpointing ------------------------------------------------
 # Sentinel files live in STATE_DIR.  Delete one to re-run that stage.
@@ -192,6 +282,7 @@ echo "  RM epochs        : $RM_EPOCHS"
 echo "  Policy epochs    : $POLICY_EPOCHS"
 echo "  Base model dir   : $MODEL_DIR"
 echo "  vLLM server      : $([ "$USE_VLLM_SERVER" = "1" ] && echo "enabled (port $VLLM_PORT, tp=$VLLM_TP)" || echo "disabled (HF backend)")"
+echo "  Best-of-N        : $([ "${BEST_OF_N:-1}" -gt 1 ] && echo "N=$BEST_OF_N  temp=$BON_TEMPERATURE" || echo "disabled")"
 echo "  Started at       : $(date)"
 echo "════════════════════════════════════════════════"
 
@@ -199,8 +290,7 @@ if [[ "$USE_VLLM_SERVER" == "1" ]]; then
     export LOCAL_BASE_URL="http://localhost:${VLLM_PORT}/v1"
     export LOCAL_API_KEY="EMPTY"
     export USE_VLLM_SERVER USE_VLLM=0
-    _start_vllm_server
-    echo ""
+    # vLLM is started/stopped per-stage by _ensure_vllm_running/_ensure_vllm_stopped
 fi
 
 # Sanity check — base ARGDesigner checkpoint must exist.
@@ -210,16 +300,18 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     exit 1
 fi
 
-# ---- Stage 1: Collect preference pairs --------------------------------------
+# ---- Stage 1a: Generate ARGDesigner candidates (no vLLM — GPU free) ---------
 echo ""
-if stage_done stage1_collect; then
-    echo "▶ [Stage 1/4] Collect preference pairs ... SKIPPED (already done)"
+if stage_done stage1a_gen_candidates || stage_done stage1_collect; then
+    echo "▶ [Stage 1a/4] Gen candidates ... SKIPPED (already done)"
 else
-    echo "▶ [Stage 1/4] Collect preference pairs ..."
+    echo "▶ [Stage 1a/4] Gen candidates (ARGDesigner GNN, no vLLM) ..."
+    # vLLM is not running yet — ARGDesigner can use the full GPU.
+    _ensure_vllm_stopped
 
     uv run rlhf \
         --dataset            "$DATASET" \
-        --phase              collect \
+        --phase              gen_candidates \
         --llm_name           "$HF_MODEL" \
         --dataset_json       "$DATASET_JSON" \
         --num_tasks          "$RLHF_NUM_TASKS" \
@@ -228,29 +320,69 @@ else
         --max_agents         "$MAX_AGENTS" \
         --w_correct          "$W_CORRECT" \
         --w_size             "$W_SIZE" \
-        --w_token            "$W_TOKEN" \
+        --w_edge             "$W_EDGE" \
         --pair_margin        "$PAIR_MARGIN" \
-        --pruning_ratio      "$PRUNING_RATIO" \
-        --checkpoint_every   "$CHECKPOINT_EVERY" \
-        --llm_timeout        "$LLM_TIMEOUT" \
         --seed               "$SEED" \
         --sample_temperatures $SAMPLE_TEMPERATURES \
         ${ARG_MODEL_DIR:+--arg_model_dir "$ARG_MODEL_DIR"} \
         ${ARG_MODEL_SAMPLES:+--arg_model_samples "$ARG_MODEL_SAMPLES"} \
+        $([ "${DIFFICULTY_FILTER}" = "1" ] && echo "--difficulty_filter") \
+        $([ "${DIFFICULTY_FILTER}" = "1" ] && echo "--min_fail_rate $MIN_FAIL_RATE") \
+        $([ "${WEAK_BASELINES}"    = "1" ] && echo "--weak_baselines") \
+        $([ "${ROLE_SWEEP}"        = "1" ] && echo "--role_sweep") \
+        $([ "${ROLE_SWEEP}"        = "1" ] && echo "--role_sweep_topology $ROLE_SWEEP_TOPOLOGY") \
+        $([ "${ROLE_SWEEP}"        = "1" ] && echo "--role_sweep_n_agents $ROLE_SWEEP_N_AGENTS") \
+        ${ROLE_SWEEP_MAX_COMBOS:+$([ "${ROLE_SWEEP}" = "1" ] && echo "--role_sweep_max_combos $ROLE_SWEEP_MAX_COMBOS")} \
         $(
-            # Auto-include accepted (cold-start / D_eff) and rejected graph dirs
-            # alongside any user-specified COLDSTART_DIRS.
             _dirs="${COLDSTART_DIRS:-}"
-            # Accepted graphs (correct .pt files in the root data dirs)
             [[ -d "$COLD_START_DIR" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR"
             [[ -d "$D_EFF_DIR"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR"
-            # Rejected graphs (saved to rlhf_rejected subdirs)
             [[ -d "$COLD_START_DIR/rlhf_rejected" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR/rlhf_rejected"
             [[ -d "$D_EFF_DIR/rlhf_rejected"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR/rlhf_rejected"
             [[ -n "$_dirs" ]] && echo "--coldstart_dirs $_dirs"
         )
 
-    mark_done stage1_collect
+    mark_done stage1a_gen_candidates
+    echo "  ✓ Candidates → $PREFERENCE_DIR/candidates.pkl"
+fi
+
+# ---- Stage 1b: LLM scoring of candidates (vLLM must be running) -------------
+echo ""
+if stage_done stage1b_collect_llm || stage_done stage1_collect; then
+    echo "▶ [Stage 1b/4] Collect LLM scoring ... SKIPPED (already done)"
+else
+    echo "▶ [Stage 1b/4] Collect LLM scoring (vLLM inference on candidates) ..."
+    _ensure_vllm_running
+
+    uv run rlhf \
+        --dataset            "$DATASET" \
+        --phase              collect_llm \
+        --llm_name           "$HF_MODEL" \
+        --dataset_json       "$DATASET_JSON" \
+        --num_tasks          "$RLHF_NUM_TASKS" \
+        --preference_dir     "$PREFERENCE_DIR" \
+        --min_agents         "$MIN_AGENTS" \
+        --max_agents         "$MAX_AGENTS" \
+        --w_correct          "$W_CORRECT" \
+        --w_size             "$W_SIZE" \
+        --w_edge             "$W_EDGE" \
+        --pair_margin        "$PAIR_MARGIN" \
+        --pruning_ratio      "$PRUNING_RATIO" \
+        --checkpoint_every   "$CHECKPOINT_EVERY" \
+        --task_concurrency      "$TASK_CONCURRENCY" \
+        --inference_concurrency "$INFERENCE_CONCURRENCY" \
+        --llm_timeout           "$LLM_TIMEOUT" \
+        --seed               "$SEED" \
+        $(
+            _dirs="${COLDSTART_DIRS:-}"
+            [[ -d "$COLD_START_DIR" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR"
+            [[ -d "$D_EFF_DIR"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR"
+            [[ -d "$COLD_START_DIR/rlhf_rejected" ]] && _dirs="${_dirs:+$_dirs }$COLD_START_DIR/rlhf_rejected"
+            [[ -d "$D_EFF_DIR/rlhf_rejected"      ]] && _dirs="${_dirs:+$_dirs }$D_EFF_DIR/rlhf_rejected"
+            [[ -n "$_dirs" ]] && echo "--coldstart_dirs $_dirs"
+        )
+
+    mark_done stage1b_collect_llm
     echo "  ✓ Collect → $PREFERENCE_DIR"
 fi
 
@@ -260,6 +392,7 @@ if stage_done stage2_train_rm; then
     echo "▶ [Stage 2/4] Train reward model ... SKIPPED (already done)"
 else
     echo "▶ [Stage 2/4] Train reward model ..."
+    _ensure_vllm_stopped
 
     uv run rlhf \
         --dataset          "$DATASET" \
@@ -272,7 +405,8 @@ else
         --rm_hidden_dim    "$RM_HIDDEN_DIM" \
         --rm_output_dim    "$RM_OUTPUT_DIM" \
         --rm_val_fraction  "$RM_VAL_FRACTION" \
-        --both_wrong_weight "$BOTH_WRONG_WEIGHT"
+        --both_wrong_weight  "$BOTH_WRONG_WEIGHT" \
+        --both_correct_weight "$BOTH_CORRECT_WEIGHT"
 
     mark_done stage2_train_rm
     echo "  ✓ Reward model → $RM_CHECKPOINT"
@@ -298,6 +432,7 @@ else
         --policy_lr          "$POLICY_LR" \
         --kl_coeff           "$KL_COEFF" \
         --samples_per_task   "$SAMPLES_PER_TASK" \
+        --grad_accum_steps   "$GRAD_ACCUM_STEPS" \
         --seed               "$SEED"
 
     mark_done stage3_train_policy
@@ -330,6 +465,20 @@ NO_EF="${NO_EF:-0}"
 NO_EF_FLAG=""
 [[ "$NO_EF" == "1" ]] && NO_EF_FLAG="--no_ef"
 
+# Best-of-N flags: only pass when BEST_OF_N > 1 and required files exist
+BON_FLAGS=""
+if [[ "${BEST_OF_N:-1}" -gt 1 ]]; then
+    ROLE_EMB_FILE="$COLD_START_DIR/precomputed_role_embeddings.pkl"
+    if [[ ! -f "$RM_CHECKPOINT" ]]; then
+        echo "WARNING: BEST_OF_N=$BEST_OF_N but RM checkpoint not found: $RM_CHECKPOINT — disabling BoN"
+    elif [[ ! -f "$ROLE_EMB_FILE" ]]; then
+        echo "WARNING: BEST_OF_N=$BEST_OF_N but role embeddings not found: $ROLE_EMB_FILE — disabling BoN"
+    else
+        BON_FLAGS="--best_of_n $BEST_OF_N --bon_temperature $BON_TEMPERATURE --rm_checkpoint $RM_CHECKPOINT --role_emb_path $ROLE_EMB_FILE"
+        echo "  [BoN] Enabled: N=$BEST_OF_N  temperature=$BON_TEMPERATURE"
+    fi
+fi
+
 export PYTHONPATH
 
 # ---- Stage 4a: Generate graphs (RLHF policy) --------------------------------
@@ -349,7 +498,8 @@ else
         --model_type   "$MODEL_TYPE" \
         ${TASK_SPLIT_RAW:+--task_split_path "$PROJECT_ROOT/$TASK_SPLIT_RAW"} \
         ${LIMIT:+--limit "$LIMIT"} \
-        $NO_EF_FLAG
+        $NO_EF_FLAG \
+        $BON_FLAGS
 
     mark_done stage4a_gen_graphs
     echo "  ✓ Graphs → $GRAPHS_FILE"
@@ -361,6 +511,7 @@ if stage_done stage4b_benchmark; then
     echo "▶ [Stage 4b/4] Benchmark ... SKIPPED (already done)"
 else
     echo "▶ [Stage 4b/4] Benchmark (RLHF pre-generated graphs) ..."
+    _ensure_vllm_running
 
     RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -383,9 +534,63 @@ else
     echo "  ✓ Results → $OUTPUT_FILE"
 fi
 
+# ---- Stage 5a: Generate graphs on TRAINING set (overfitting check) ----------
+echo ""
+TRAIN_GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/rlhf_train"
+TRAIN_GRAPHS_FILE="$TRAIN_GRAPHS_DIR/${DATASET}_graphs.jsonl"
+
+if stage_done stage5a_gen_graphs_train; then
+    echo "▶ [Stage 5a/5] Generate train-set graphs ... SKIPPED (already done)"
+else
+    echo "▶ [Stage 5a/5] Generate train-set graphs (overfitting check) ..."
+    mkdir -p "$TRAIN_GRAPHS_DIR"
+
+    uv run python experiment/generate_graphs.py \
+        --model_path   "$POLICY_DIR" \
+        --dataset      "$DATASET" \
+        --dataset_path "$DATASET_JSON" \
+        --output_file  "$TRAIN_GRAPHS_FILE" \
+        --model_type   rlhf_train \
+        --split_key    "base_tasks_indices,finetune_tasks_indices" \
+        ${TASK_SPLIT_RAW:+--task_split_path "$PROJECT_ROOT/$TASK_SPLIT_RAW"} \
+        $NO_EF_FLAG \
+        $BON_FLAGS
+
+    mark_done stage5a_gen_graphs_train
+    echo "  ✓ Train graphs → $TRAIN_GRAPHS_FILE"
+fi
+
+# ---- Stage 5b: Benchmark train-set graphs ------------------------------------
+echo ""
+if stage_done stage5b_benchmark_train; then
+    echo "▶ [Stage 5b/5] Benchmark train set ... SKIPPED (already done)"
+else
+    echo "▶ [Stage 5b/5] Benchmark train set ..."
+    _ensure_vllm_running
+
+    TRAIN_RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf_train"
+    TRAIN_OUTPUT_FILE="$TRAIN_RESULTS_DIR/${DATASET}.jsonl"
+    TRAIN_SUMMARY_LOG="$TRAIN_RESULTS_DIR/summary.jsonl"
+    mkdir -p "$TRAIN_RESULTS_DIR"
+
+    uv run python experiment/benchmark_pregraph.py \
+        --graphs_file      "$TRAIN_GRAPHS_FILE" \
+        --dataset          "$DATASET" \
+        --llm_name         "$HF_MODEL" \
+        --decision_method  "$DECISION" \
+        --output_file      "$TRAIN_OUTPUT_FILE" \
+        --summary_log_file "$TRAIN_SUMMARY_LOG" \
+        --eval_batch_size  "$EVAL_BATCH" \
+        --model_type       rlhf_train
+
+    mark_done stage5b_benchmark_train
+    echo "  ✓ Train results → $TRAIN_OUTPUT_FILE"
+fi
+
 echo ""
 echo "════════════════════════════════════════════════"
 echo "  RLHF pipeline complete for $DATASET"
-echo "  Summary : ${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf/summary.jsonl"
+echo "  Test  results : ${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf/summary.jsonl"
+echo "  Train results : ${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/rlhf_train/summary.jsonl"
 echo "  Finished: $(date)"
 echo "════════════════════════════════════════════════"
