@@ -16,19 +16,19 @@ Three phases (select with --phase):
 Example
 -------
 # Step 1 – collect data
-python experiment/rlhf_gsm8k.py --dataset gsm8k --phase collect \
+python experiment/rlhf.py --dataset gsm8k --phase collect \
     --dataset_json datasets/gsm8k/gsm8k.jsonl \
     --llm_name Qwen/Qwen3-8B \
     --preference_dir rlhf_data/gsm8k \
     --num_tasks 100
 
 # Step 2 – train reward model
-python experiment/rlhf_gsm8k.py --dataset gsm8k --phase train_rm \
+python experiment/rlhf.py --dataset gsm8k --phase train_rm \
     --preference_dir rlhf_data/gsm8k \
     --rm_checkpoint rlhf_checkpoints/gsm8k/reward_model.pth
 
 # Step 3 – fine-tune policy (requires pretrained ARGDesigner checkpoint)
-python experiment/rlhf_gsm8k.py --dataset gsm8k --phase train_policy \
+python experiment/rlhf.py --dataset gsm8k --phase train_policy \
     --model_dir checkpoints/gsm8k \
     --rm_checkpoint rlhf_checkpoints/gsm8k/reward_model.pth \
     --policy_checkpoint rlhf_checkpoints/gsm8k/policy_rlhf.pth \
@@ -48,7 +48,7 @@ import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from experiment.cold_start_gemma import (
+from experiment.cold_start import (
     _load_dataset,
     _load_task_split,
     _get_predict,

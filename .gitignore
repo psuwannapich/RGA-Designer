@@ -7,3 +7,6 @@ meta-llama-*/
 Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-*/
 hugging-quants-Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-*/
 Llama-3.2-3B-exp/*
+benchmark_datasets/*/base.jsonl
+benchmark_datasets/*/finetune.jsonl
+benchmark_datasets/*/test.jsonl

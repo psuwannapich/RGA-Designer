@@ -48,7 +48,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 from tqdm import tqdm
 
 from mas_framework.graph.graph import Graph, TestGraph
-from experiment.cold_start_gemma import (
+from experiment.cold_start import (
     _load_dataset,
     _load_task_split,
     _get_predict,
