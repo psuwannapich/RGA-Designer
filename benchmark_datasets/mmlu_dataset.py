@@ -12,7 +12,7 @@ from typing import Union, List, Literal, Any, Dict
 def mmlu_data_process(data_dir: str, split: str = "test") -> list:
     """
     Load MMLU CSV files and return a flat list of {task, answer} dicts
-    compatible with cold_start_gemma.py.
+    compatible with cold_start.py.
 
     Parameters
     ----------

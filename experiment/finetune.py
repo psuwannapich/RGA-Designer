@@ -15,7 +15,7 @@ After building D_eff the script reloads the Phase-1 checkpoint and trains
 it on D_eff at a lower learning rate, producing `ef_best_model.pth`.
 
 Usage:
-    python experiment/finetune_gemma.py \\
+    python experiment/finetune.py \\
         --dataset        gsm8k \\
         --dataset_json   datasets/gsm8k/gsm8k.jsonl \\
         --cold_start_dir ColdStartData_hf_gsm8k \\
@@ -56,7 +56,7 @@ from experiment.utils import (
     load_model, generate_graph, convert_to_pyg_graph,
 )
 # Re-use all dataset helpers from the cold-start script
-from experiment.cold_start_gemma import (
+from experiment.cold_start import (
     _load_dataset,
     _get_predict,
     _is_correct,

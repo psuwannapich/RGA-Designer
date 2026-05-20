@@ -2,7 +2,7 @@
 Standalone ARGDesigner pretraining script.
 
 Trains a fresh ARGDesigner on cold-start graph data (.pt files) produced by
-cold_start_gemma.py.  Works for all supported datasets without needing the
+cold_start.py.  Works for all supported datasets without needing the
 dataset-specific finetune_*.py scripts (which have hardcoded paths and assume
 a specific working directory).
 

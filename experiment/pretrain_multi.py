@@ -33,7 +33,7 @@ Usage — LOO finetune for gsm8k (continues from best_model.pth above):
         --output_dir     checkpoints_loo/gsm8k \\
         --epochs         30
 
-The saved checkpoint format is identical to pretrain.py / finetune_gemma.py
+The saved checkpoint format is identical to pretrain.py / finetune.py
 output, so generate_graphs.py and all downstream scripts work unmodified.
 """
 

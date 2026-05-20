@@ -74,8 +74,8 @@ dev = [
 #   uv run rlhf        --phase train_policy --model_dir <dir>
 # ---------------------------------------------------------------------------
 [project.scripts]
-cold-start = "experiment.cold_start_gemma:main_cli"
-rlhf       = "experiment.rlhf_gsm8k:cli"
+cold-start = "experiment.cold_start:main_cli"
+rlhf       = "experiment.rlhf:cli"
 baseline   = "experiment.evaluate_baseline:cli"
 
 [build-system]

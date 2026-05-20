@@ -7,7 +7,7 @@ For each task, several graph topologies are tried; graphs that correctly
 solve the task are saved as .pt files consumed by the ARGDesigner trainer.
 
 Usage:
-    python experiment/cold_start_gemma.py \
+    python experiment/cold_start.py \
         --dataset gsm8k \
         --dataset_json datasets/gsm8k/gsm8k.jsonl \
         --llm_name gemma3 \
