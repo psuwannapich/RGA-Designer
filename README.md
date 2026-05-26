@@ -82,37 +82,20 @@ RGA-Designer/
 │   ├── model.py               # ARGDesigner autoregressive model
 │   ├── cold_start.py          # ARGDesigner cold-start data generation
 │   ├── finetune.py            # ARGDesigner D_eff fine-tuning
-│   ├── rga.py                # RGA pipeline
+│   ├── rga.py                 # RGA pipeline
 │   ├── generate_graphs.py     # Graph sampling from policy
 │   └── benchmark_pregraph.py  # LLM inference on pre-generated graphs
 ├── mas_framework/
 │   ├── agents/                # Agent implementations
 │   ├── graph/                 # Async multi-agent execution engine
 │   ├── llm/                   # LLM backends
-│   └── rga/                  # Reward model, policy trainer, data collector
+│   └── rga/                   # Reward model, policy trainer, data collector
 ├── benchmark_datasets/        # Dataset loaders and raw data
 └── scripts/
     ├── train.sh               # ARGDesigner training
     ├── rga.sh                 # RGA per-dataset fine-tuning
-    ├── rga_global_rm.sh      # RGA global reward model fine-tuning
+    ├── rga_global_rm.sh       # RGA global reward model fine-tuning
     └── benchmark_baselines.sh # Baseline evaluation
-```
-
-## Citation
-
-```bibtex
-@article{suwannapichat2025rga,
-  title  = {RGA-Designer: Aligning Autoregressive Multi-Agent Graph Generation with Human Feedback},
-  author = {Suwannapichat, Poomphob and others},
-  year   = {2025}
-}
-
-@inproceedings{li2026assemble,
-  title     = {Assemble Your Crew: Automatic Multi-Agent Communication Topology Design via Autoregressive Graph Generation},
-  author    = {Li, Shiyuan and Liu, Yixin and Wen, Qingsong and Zhang, Chengqi and Pan, Shirui},
-  booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
-  year      = {2026}
-}
 ```
 
 ## Acknowledgments
