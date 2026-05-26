@@ -3,22 +3,24 @@
 # Global RLHF pipeline — trains ONE reward model on preference data pooled
 # across ALL datasets, then fine-tunes a per-dataset policy with it.
 #
-# Prerequisites: scripts/rlhf.sh (collect phase, stages 1a+1b) must have
+# Prerequisites: scripts/rga.sh (collect phase, stages 1a+1b) must have
 #   completed for every dataset so that preference pair shards exist.
 #
 # Usage:
-#   bash scripts/rlhf_global_rm.sh
-#   RUN_NAME=kl02_bon5 bash scripts/rlhf_global_rm.sh
+#   bash scripts/rga_global_rm.sh
+#   RUN_NAME=kl02_bon5 bash scripts/rga_global_rm.sh
 #
 # Key environment variables (all optional):
-#   HF_MODEL         HuggingFace model ID            (default: Qwen/Qwen3-4B)
-#   VLLM_SERVE_DIR   directory containing vLLM .venv (required if USE_VLLM_SERVER=1)
-#   USE_VLLM_SERVER  1 = use vLLM HTTP server        (default: 1)
-#   VLLM_PORT        port for vLLM server            (default: 8200)
+#   HF_MODEL         HuggingFace model ID or name passed to --llm_name
+#                    (default: Qwen/Qwen3-4B)
+#   LOCAL_BASE_URL   OpenAI-compatible API base URL.
+#                    Set this to use a vLLM server, Ollama, or a commercial API.
+#                    Leave unset to use the HuggingFace transformers backend.
+#   LOCAL_API_KEY    API key for the above endpoint (default: EMPTY)
 #   RUN_NAME         unique label for this run; namespaces all outputs
-#                    so different settings can coexist   (default: default)
-#   KL_COEFF         KL penalty coefficient            (default: 0.2)
-#   BEST_OF_N        BoN graph selection at inference   (default: 5)
+#                    so different settings can coexist (default: default)
+#   KL_COEFF         KL penalty coefficient (default: 0.2)
+#   BEST_OF_N        BoN graph selection at inference (default: 5)
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -57,16 +59,26 @@ if [[ -z "${MODEL_SLUG:-}" ]]; then
 fi
 export DISABLE_THINKING MODEL_SLUG PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
+# ---- LLM backend ------------------------------------------------------------
+# Set LOCAL_BASE_URL to use an OpenAI-compatible API (local vLLM, Ollama, or
+# a commercial provider). Leave unset to fall back to HuggingFace transformers.
+if [[ -n "${LOCAL_BASE_URL:-}" ]]; then
+    export LOCAL_BASE_URL LOCAL_API_KEY="${LOCAL_API_KEY:-EMPTY}"
+    export USE_VLLM_SERVER=1 USE_VLLM=0
+else
+    export USE_VLLM_SERVER=0 USE_VLLM=0
+fi
+
 # ---- Run name (namespaces all mutable outputs) --------------------------------
 RUN_NAME="${RUN_NAME:-default}"
-MODEL_TYPE="rlhf_global_rm_${RUN_NAME}"
+MODEL_TYPE="rga_global_rm_${RUN_NAME}"
 
 # ---- Hyperparameters --------------------------------------------------------
 SEED="${SEED:-42}"
 
 # Reward model
-PREFERENCE_ROOT="${PREFERENCE_ROOT:-rlhf_data}"
-RM_ROOT="${RM_ROOT:-rlhf_checkpoints}"
+PREFERENCE_ROOT="${PREFERENCE_ROOT:-rga_data}"
+RM_ROOT="${RM_ROOT:-rga_checkpoints}"
 RM_EPOCHS="${RM_EPOCHS:-20}"
 RM_LR="${RM_LR:-1e-4}"
 RM_BATCH_SIZE="${RM_BATCH_SIZE:-32}"
@@ -78,7 +90,7 @@ BOTH_CORRECT_WEIGHT="${BOTH_CORRECT_WEIGHT:-0.1}"
 
 # Policy
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints}"
-POLICY_ROOT="${POLICY_ROOT:-rlhf_checkpoints_global}"
+POLICY_ROOT="${POLICY_ROOT:-rga_checkpoints_global}"
 POLICY_EPOCHS="${POLICY_EPOCHS:-20}"
 POLICY_NUM_TASKS="${POLICY_NUM_TASKS:-200}"
 POLICY_LR="${POLICY_LR:-5e-6}"
@@ -97,47 +109,8 @@ COLD_START_ROOT="${COLD_START_ROOT:-ColdStartData}"
 
 GLOBAL_RM_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${RM_ROOT}/global_${RUN_NAME}/reward_model.pth"
 
-# ---- vLLM server ------------------------------------------------------------
-USE_VLLM_SERVER="${USE_VLLM_SERVER:-1}"
-VLLM_PORT="${VLLM_PORT:-8200}"
-VLLM_TP="${VLLM_TP:-1}"
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
-VLLM_DTYPE="${VLLM_DTYPE:-float16}"
-VLLM_SERVE_DIR="${VLLM_SERVE_DIR:-}"
-VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"
-VLLM_PID=""
-
-_start_vllm_server() {
-    if [[ -z "$VLLM_SERVE_DIR" ]]; then
-        echo "ERROR: VLLM_SERVE_DIR is not set. Export it before running this script."
-        exit 1
-    fi
-    echo "Starting vLLM server for '$HF_MODEL' on port $VLLM_PORT ..."
-    mkdir -p "$PROJECT_ROOT/logs"
-    local _cmd=("$VLLM_SERVE_DIR/.venv/bin/vllm" serve "$HF_MODEL"
-        --port "$VLLM_PORT" --dtype "$VLLM_DTYPE" --trust-remote-code
-        --max-model-len "$VLLM_MAX_MODEL_LEN"
-        --gpu-memory-utilization 0.90
-        --tensor-parallel-size "$VLLM_TP" --enforce-eager)
-    [[ -n "${VLLM_CHAT_TEMPLATE:-}" ]] && _cmd+=(--chat-template "$VLLM_CHAT_TEMPLATE")
-    ("${_cmd[@]}") > "$PROJECT_ROOT/logs/vllm_$$.log" 2>&1 &
-    VLLM_PID=$!
-    echo "  PID=$VLLM_PID  log=logs/vllm_$$.log"
-    for _i in $(seq 1 120); do
-        curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1 && \
-            echo "  vLLM ready (${_i}x5s)" && return 0
-        sleep 5
-    done
-    echo "ERROR: vLLM did not start within 10 minutes." >&2; exit 1
-}
-
-_stop_vllm_server() {
-    [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null || true
-}
-trap _stop_vllm_server EXIT
-
 # ---- Stage checkpointing ----------------------------------------------------
-STATE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/state/rlhf_global_${RUN_NAME}"
+STATE_DIR="$PROJECT_ROOT/${MODEL_SLUG}/state/rga_global_${RUN_NAME}"
 mkdir -p "$STATE_DIR"
 stage_done() { [[ -f "$STATE_DIR/$1.done" ]]; }
 mark_done()  { touch "$STATE_DIR/$1.done"; echo "  checkpoint: $STATE_DIR/$1.done"; }
@@ -145,17 +118,12 @@ mark_done()  { touch "$STATE_DIR/$1.done"; echo "  checkpoint: $STATE_DIR/$1.don
 echo "================================================"
 echo "  Global RLHF Pipeline"
 echo "  Model    : $HF_MODEL  (slug: $MODEL_SLUG)"
+echo "  Backend  : $([ "${USE_VLLM_SERVER}" = "1" ] && echo "OpenAI-compatible ($LOCAL_BASE_URL)" || echo "HuggingFace transformers")"
 echo "  Run name : $RUN_NAME"
 echo "  Global RM: $GLOBAL_RM_CHECKPOINT"
 echo "  BoN      : $([ "${BEST_OF_N:-1}" -gt 1 ] && echo "N=$BEST_OF_N temp=$BON_TEMPERATURE" || echo "disabled")"
 echo "  Started  : $(date)"
 echo "================================================"
-
-if [[ "$USE_VLLM_SERVER" == "1" ]]; then
-    export LOCAL_BASE_URL="http://localhost:${VLLM_PORT}/v1"
-    export LOCAL_API_KEY="EMPTY"
-    export USE_VLLM_SERVER USE_VLLM=0
-fi
 
 # ---- Stage 1: Train global reward model -------------------------------------
 if stage_done stage1_train_global_rm; then
@@ -175,13 +143,13 @@ else
     done
 
     if [[ ${#PREF_DIRS[@]} -eq 0 ]]; then
-        echo "ERROR: No preference data found. Run scripts/rlhf.sh (stages 1a+1b) for each dataset first."
+        echo "ERROR: No preference data found. Run scripts/rga.sh (stages 1a+1b) for each dataset first."
         exit 1
     fi
 
     mkdir -p "$(dirname "$GLOBAL_RM_CHECKPOINT")"
 
-    uv run rlhf \
+    uv run rga \
         --dataset gsm8k --phase train_rm \
         --preference_dirs "${PREF_DIRS[@]}" \
         --rm_checkpoint "$GLOBAL_RM_CHECKPOINT" \
@@ -206,7 +174,7 @@ for i in "${!DATASETS[@]}"; do
     DECISION="${DECISION_METHODS[$i]}"
 
     MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DS}"
-    POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${RUN_NAME}/${DS}/policy_rlhf_global_rm.pth"
+    POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${RUN_NAME}/${DS}/policy_rga_global_rm.pth"
     POLICY_DIR="$(dirname "$POLICY_CHECKPOINT")"
     GRAPHS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${GRAPHS_ROOT}/${MODEL_TYPE}"
     GRAPHS_FILE="$GRAPHS_DIR/${DS}_graphs.jsonl"
@@ -226,7 +194,7 @@ for i in "${!DATASETS[@]}"; do
         fi
         mkdir -p "$POLICY_DIR"
 
-        uv run rlhf \
+        uv run rga \
             --dataset "$DS" --phase train_policy \
             --dataset_json "$DS_JSON" \
             --model_dir "$MODEL_DIR" \
@@ -273,11 +241,6 @@ for i in "${!DATASETS[@]}"; do
         echo "[Stage 3b] Benchmark ($DS) ... SKIPPED"
     else
         echo "[Stage 3b] Benchmark ($DS) ..."
-        if [[ "$USE_VLLM_SERVER" == "1" ]]; then
-            if [[ -z "${VLLM_PID:-}" ]] || ! kill -0 "${VLLM_PID}" 2>/dev/null; then
-                _start_vllm_server
-            fi
-        fi
 
         RESULTS_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${RESULTS_ROOT}/pregraph/${MODEL_TYPE}"
         mkdir -p "$RESULTS_DIR"

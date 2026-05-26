@@ -452,7 +452,7 @@ async def main():
 
     # Rejected graphs go here — separate from training data so the ARGDesigner
     # trainer never sees them.  Used only as the rejected side of RLHF pairs.
-    rlhf_dir = os.path.join(args.output_dir, "rlhf_rejected")
+    rlhf_dir = os.path.join(args.output_dir, "rga_rejected")
     os.makedirs(rlhf_dir, exist_ok=True)
     print(f"RLHF rejected dir: {rlhf_dir}\n")
 

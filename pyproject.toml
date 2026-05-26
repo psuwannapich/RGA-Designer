@@ -69,13 +69,13 @@ dev = [
 # ---------------------------------------------------------------------------
 # Entry points — invoked via:  uv run <name> [extra args]
 #   uv run cold-start  --dataset gsm8k --num_tasks 40
-#   uv run rlhf        --phase collect --num_tasks 100
-#   uv run rlhf        --phase train_rm
-#   uv run rlhf        --phase train_policy --model_dir <dir>
+#   uv run rga        --phase collect --num_tasks 100
+#   uv run rga        --phase train_rm
+#   uv run rga        --phase train_policy --model_dir <dir>
 # ---------------------------------------------------------------------------
 [project.scripts]
 cold-start = "experiment.cold_start:main_cli"
-rlhf       = "experiment.rlhf:cli"
+rga        = "experiment.rga:cli"
 baseline   = "experiment.evaluate_baseline:cli"
 
 [build-system]

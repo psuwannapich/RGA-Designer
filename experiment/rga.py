@@ -16,22 +16,22 @@ Three phases (select with --phase):
 Example
 -------
 # Step 1 – collect data
-python experiment/rlhf.py --dataset gsm8k --phase collect \
+python experiment/rga.py --dataset gsm8k --phase collect \
     --dataset_json datasets/gsm8k/gsm8k.jsonl \
     --llm_name Qwen/Qwen3-8B \
-    --preference_dir rlhf_data/gsm8k \
+    --preference_dir rga_data/gsm8k \
     --num_tasks 100
 
 # Step 2 – train reward model
-python experiment/rlhf.py --dataset gsm8k --phase train_rm \
-    --preference_dir rlhf_data/gsm8k \
-    --rm_checkpoint rlhf_checkpoints/gsm8k/reward_model.pth
+python experiment/rga.py --dataset gsm8k --phase train_rm \
+    --preference_dir rga_data/gsm8k \
+    --rm_checkpoint rga_checkpoints/gsm8k/reward_model.pth
 
 # Step 3 – fine-tune policy (requires pretrained ARGDesigner checkpoint)
-python experiment/rlhf.py --dataset gsm8k --phase train_policy \
+python experiment/rga.py --dataset gsm8k --phase train_policy \
     --model_dir checkpoints/gsm8k \
-    --rm_checkpoint rlhf_checkpoints/gsm8k/reward_model.pth \
-    --policy_checkpoint rlhf_checkpoints/gsm8k/policy_rlhf.pth \
+    --rm_checkpoint rga_checkpoints/gsm8k/reward_model.pth \
+    --policy_checkpoint rga_checkpoints/gsm8k/policy_rga.pth \
     --dataset_json datasets/gsm8k/gsm8k.jsonl \
     --num_tasks 100
 
@@ -72,7 +72,7 @@ _MAX_AGENTS = {
 
 
 def _answer_checker(dataset: str):
-    """Return a dataset-aware answer checker compatible with RLHFDataCollector."""
+    """Return a dataset-aware answer checker compatible with RGADataCollector."""
     def checker(predicted: str, ground_truth: str) -> bool:
         return _is_correct(dataset, predicted, ground_truth)
     return checker
@@ -208,8 +208,8 @@ def _gen_candidates(args):
 
     Called before vLLM is started so the GPU is free for ARGDesigner inference.
     """
-    from mas_framework.rlhf.data_collector import RLHFDataCollector
-    from mas_framework.rlhf.preference_data import PreferenceWeights
+    from mas_framework.rga.data_collector import RGADataCollector
+    from mas_framework.rga.preference_data import PreferenceWeights
     import random
 
     os.makedirs(args.preference_dir, exist_ok=True)
@@ -258,7 +258,7 @@ def _gen_candidates(args):
         ref_max_nodes=args.max_agents,
     )
 
-    collector = RLHFDataCollector(
+    collector = RGADataCollector(
         domain=args.dataset,
         llm_name=args.llm_name,          # stored but not called during gen_candidates
         answer_checker=_answer_checker(args.dataset),
@@ -301,8 +301,8 @@ async def _collect_llm(args):
     Requires {preference_dir}/candidates.pkl written by _gen_candidates().
     Called after vLLM has been started so LLM inference is available.
     """
-    from mas_framework.rlhf.data_collector import RLHFDataCollector
-    from mas_framework.rlhf.preference_data import PreferenceWeights
+    from mas_framework.rga.data_collector import RGADataCollector
+    from mas_framework.rga.preference_data import PreferenceWeights
 
     candidates_path = os.path.join(args.preference_dir, "candidates.pkl")
     if not os.path.exists(candidates_path):
@@ -328,7 +328,7 @@ async def _collect_llm(args):
         print(f"\nLoading ColdStart pool from: {args.coldstart_dirs}")
         coldstart_pool = _load_coldstart_pool(args.coldstart_dirs)
 
-    collector = RLHFDataCollector(
+    collector = RGADataCollector(
         domain=args.dataset,
         llm_name=args.llm_name,
         answer_checker=_answer_checker(args.dataset),
@@ -360,8 +360,8 @@ async def _collect_llm(args):
 # ---------------------------------------------------------------------------
 
 async def _collect(args):
-    from mas_framework.rlhf.data_collector import RLHFDataCollector
-    from mas_framework.rlhf.preference_data import PreferenceWeights
+    from mas_framework.rga.data_collector import RGADataCollector
+    from mas_framework.rga.preference_data import PreferenceWeights
     import random
 
     all_records = _load_dataset(args.dataset, args.dataset_json)
@@ -411,7 +411,7 @@ async def _collect(args):
             print("WARNING: difficulty filter removed all tasks — disabling filter.")
             sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
 
-    collector = RLHFDataCollector(
+    collector = RGADataCollector(
         domain=args.dataset,
         llm_name=args.llm_name,
         answer_checker=_answer_checker(args.dataset),
@@ -453,8 +453,8 @@ async def _collect(args):
 # ---------------------------------------------------------------------------
 
 def _train_rm(args):
-    from mas_framework.rlhf.reward_model import GraphRewardModel
-    from mas_framework.rlhf.reward_trainer import train_reward_model
+    from mas_framework.rga.reward_model import GraphRewardModel
+    from mas_framework.rga.reward_trainer import train_reward_model
 
     device = torch.device(args.device)
     model = GraphRewardModel(
@@ -494,8 +494,8 @@ def _train_rm(args):
 # ---------------------------------------------------------------------------
 
 def _train_policy(args):
-    from mas_framework.rlhf.reward_trainer import load_reward_model
-    from mas_framework.rlhf.policy_trainer import RLHFPolicyTrainer
+    from mas_framework.rga.reward_trainer import load_reward_model
+    from mas_framework.rga.policy_trainer import RGAPolicyTrainer
     from experiment.utils import load_model
     import random
     import numpy as np
@@ -530,7 +530,7 @@ def _train_policy(args):
         })
 
     print(f"Fine-tuning policy on {len(task_records)} tasks ({args.dataset}) ...")
-    trainer = RLHFPolicyTrainer(
+    trainer = RGAPolicyTrainer(
         policy=policy,
         reward_model=reward_model,
         device=device,
@@ -596,7 +596,7 @@ def parse_args():
     p.add_argument("--llm_name", default="Qwen/Qwen3-8B",
                    help="HuggingFace model ID or Ollama name")
     p.add_argument("--preference_dir", default=None,
-                   help="Directory for preference pair shards (default: rlhf_data/<dataset>)")
+                   help="Directory for preference pair shards (default: rga_data/<dataset>)")
     p.add_argument("--min_agents", type=int, default=2)
     p.add_argument("--max_agents", type=int, default=None,
                    help="Max agents per graph (default: per-dataset value)")
@@ -668,7 +668,7 @@ def parse_args():
                    help="Multiple preference dirs to pool for global reward model training "
                         "(overrides --preference_dir for train_rm phase)")
     p.add_argument("--rm_checkpoint", default=None,
-                   help="Reward model checkpoint path (default: rlhf_checkpoints/<dataset>/reward_model.pth)")
+                   help="Reward model checkpoint path (default: rga_checkpoints/<dataset>/reward_model.pth)")
     p.add_argument("--rm_epochs", type=int, default=20)
     p.add_argument("--rm_lr", type=float, default=1e-4)
     p.add_argument("--rm_batch_size", type=int, default=32)
@@ -699,7 +699,7 @@ def parse_args():
     p.add_argument("--model_dir", default="",
                    help="Directory of pretrained ARGDesigner checkpoint")
     p.add_argument("--policy_checkpoint", default=None,
-                   help="Policy checkpoint save path (default: rlhf_checkpoints/<dataset>/policy_rlhf.pth)")
+                   help="Policy checkpoint save path (default: rga_checkpoints/<dataset>/policy_rga.pth)")
     p.add_argument("--policy_epochs", type=int, default=10)
     p.add_argument("--policy_lr", type=float, default=1e-5)
     p.add_argument("--kl_coeff", type=float, default=0.1)
@@ -721,11 +721,11 @@ def parse_args():
 
     # Fill in dataset-derived defaults
     if args.preference_dir is None:
-        args.preference_dir = f"rlhf_data/{args.dataset}"
+        args.preference_dir = f"rga_data/{args.dataset}"
     if args.rm_checkpoint is None:
-        args.rm_checkpoint = f"rlhf_checkpoints/{args.dataset}/reward_model.pth"
+        args.rm_checkpoint = f"rga_checkpoints/{args.dataset}/reward_model.pth"
     if args.policy_checkpoint is None:
-        args.policy_checkpoint = f"rlhf_checkpoints/{args.dataset}/policy_rlhf.pth"
+        args.policy_checkpoint = f"rga_checkpoints/{args.dataset}/policy_rga.pth"
     if args.max_agents is None:
         args.max_agents = _MAX_AGENTS.get(args.dataset, 4)
 
@@ -733,7 +733,7 @@ def parse_args():
 
 
 def cli():
-    """Entry point for `uv run rlhf` (defined in pyproject.toml)."""
+    """Entry point for `uv run rga` (defined in pyproject.toml)."""
     args = parse_args()
 
     if args.phase == "collect":

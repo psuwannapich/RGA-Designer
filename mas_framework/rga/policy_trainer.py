@@ -40,8 +40,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from mas_framework.rlhf.reward_model import GraphRewardModel
-from mas_framework.rlhf.preference_data import GraphSnapshot
+from mas_framework.rga.reward_model import GraphRewardModel
+from mas_framework.rga.preference_data import GraphSnapshot
 
 EPS = 1e-9
 
@@ -330,7 +330,7 @@ def compute_logprob_for_graph(
 # Policy trainer
 # ---------------------------------------------------------------------------
 
-class RLHFPolicyTrainer:
+class RGAPolicyTrainer:
     """
     Fine-tunes ARGDesigner (the policy) using REINFORCE with KL penalty.
 

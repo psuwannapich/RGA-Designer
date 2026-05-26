@@ -15,8 +15,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
-from mas_framework.rlhf.preference_data import PreferencePairDataset
-from mas_framework.rlhf.reward_model import GraphRewardModel
+from mas_framework.rga.preference_data import PreferencePairDataset
+from mas_framework.rga.reward_model import GraphRewardModel
 
 
 def train_reward_model(
@@ -39,7 +39,7 @@ def train_reward_model(
     Parameters
     ----------
     model        : GraphRewardModel (will be modified in-place)
-    data_dir     : directory containing .pkl shards from RLHFDataCollector
+    data_dir     : directory containing .pkl shards from RGADataCollector
     device       : torch device
     epochs       : training epochs
     lr           : Adam learning rate

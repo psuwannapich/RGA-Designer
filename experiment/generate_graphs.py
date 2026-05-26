@@ -86,7 +86,7 @@ def parse_args():
 
 def load_best_of_n_components(rm_checkpoint: str, role_emb_path: str, device: torch.device):
     """Load reward model and role embeddings for Best-of-N scoring."""
-    from mas_framework.rlhf.reward_trainer import load_reward_model
+    from mas_framework.rga.reward_trainer import load_reward_model
 
     print(f"  [BoN] Loading reward model from {rm_checkpoint}")
     rm = load_reward_model(rm_checkpoint, device)
@@ -106,7 +106,7 @@ def score_graph_with_rm(rm, nx_graph, task_emb_np: np.ndarray,
     Returns the scalar reward.  Returns -inf on any error so the graph
     is never selected as best.
     """
-    from mas_framework.rlhf.preference_data import GraphSnapshot
+    from mas_framework.rga.preference_data import GraphSnapshot
 
     EMB_DIM = 384
     nodes_raw = []

@@ -29,7 +29,7 @@ import torch
 from tqdm import tqdm
 
 from mas_framework.graph.graph import Graph, TestGraph
-from mas_framework.rlhf.preference_data import (
+from mas_framework.rga.preference_data import (
     GraphSnapshot,
     PreferencePair,
     PreferenceWeights,
@@ -182,7 +182,7 @@ def _graph_fingerprint(nx_g: nx.DiGraph) -> tuple:
 # Main collector
 # ---------------------------------------------------------------------------
 
-class RLHFDataCollector:
+class RGADataCollector:
     """
     Parameters
     ----------

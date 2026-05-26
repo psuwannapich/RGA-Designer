@@ -92,7 +92,7 @@ class GraphSnapshot:
         nodes in a single-role graph (e.g. all MathSolver) identical, which
         would cause the GNN to assign the same reward to any graph size.
         """
-        from mas_framework.rlhf.reward_model import build_node_features
+        from mas_framework.rga.reward_model import build_node_features
 
         EMB_DIM = 384
         MAX_NODES = 6    # maximum agents across all datasets (MMLU uses 6)

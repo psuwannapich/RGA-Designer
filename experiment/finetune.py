@@ -471,7 +471,7 @@ async def main():
     # Rejected graphs (incorrect during finetune inference) go here.
     # Kept separate from d_eff_dir so they are never loaded by run_finetuning()
     # or generate_replay_data().  Used only as RLHF rejected candidates.
-    rlhf_dir = os.path.join(d_eff_dir, 'rlhf_rejected')
+    rlhf_dir = os.path.join(d_eff_dir, 'rga_rejected')
     os.makedirs(rlhf_dir, exist_ok=True)
     print(f"RLHF rejected dir : {rlhf_dir}")
 
