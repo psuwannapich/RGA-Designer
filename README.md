@@ -52,28 +52,24 @@ All pipeline scripts are in `scripts/`. Pass the dataset as a positional argumen
 
 ```bash
 DATASET=gsm8k bash scripts/train.sh
-
-# Or by index
-bash scripts/train.sh 0
-
-# Custom model if inference by huggingface transformers (no API)
-HF_MODEL=Qwen/Qwen3-8B DATASET=aqua bash scripts/train.sh
 ```
 
 ### Stage 2: RGA Fine-tuning
 
-Requires Stage 1–2 to have completed first.
+Requires Stage 1 to have completed first.
 
 ```bash
 # Per-dataset reward model
 DATASET=gsm8k bash scripts/rga.sh
+```
 
-# With Best-of-N inference (N=5)
-DATASET=humaneval BEST_OF_N=5 bash scripts/rga.sh
+Or using global reward model fine-tuning across datasets:
 
-# Global reward model (pooled across all datasets)
+```bash
+# Global reward model (requires all datasets to have completed Stage 1)
 bash scripts/rga_global_rm.sh
 ```
+
 ## Repository Structure
 
 ```
