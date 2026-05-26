@@ -96,4 +96,4 @@ RGA-Designer/
 
 ## Acknowledgments
 
-This codebase builds on [ARG-Designer](https://github.com/your-org/ARG-Designer), [GPTSwarm](https://github.com/metauto-ai/GPTSwarm), and [GDesigner](https://github.com/yanweiyue/GDesigner).
+This codebase builds on [ARG-Designer](https://github.com/Shiy-Li/ARG-Designer), [GPTSwarm](https://github.com/metauto-ai/GPTSwarm), and [GDesigner](https://github.com/yanweiyue/GDesigner).
