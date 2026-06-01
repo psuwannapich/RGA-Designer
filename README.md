@@ -9,7 +9,7 @@ RGA-Designer introduces a preference-based alignment stage for autoregressive mu
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/your-org/RGA-Designer.git
+git clone https://github.com/psuwannapich/RGA-Designer.git
 cd RGA-Designer
 uv sync
 ```
@@ -44,9 +44,7 @@ export LOCAL_API_KEY="YOUR_API_KEY"
 
 ## Quick Start
 
-All pipeline scripts are in `scripts/`. Pass the dataset as a positional argument or via environment variables.
-
-**Dataset index**: `0=gsm8k  1=aqua  2=multiarith  3=svamp  4=humaneval  5=mmlu`
+All pipeline scripts are in `scripts/`. Pass the dataset as a environment variable.
 
 ### Stage 1: Train ARG-Designer
 
