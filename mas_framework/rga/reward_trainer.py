@@ -80,6 +80,14 @@ def train_reward_model(
         with_model_features=with_model_features,
     )
     n = len(dataset)
+    if n == 0:
+        raise ValueError(
+            "PreferencePairDataset is empty after exclusion filters "
+            f"(both_wrong_weight={both_wrong_weight}, both_correct_weight={both_correct_weight}). "
+            "See the dataset stats printed above for the correct/wrong breakdown — "
+            "either collect more preference pairs or raise the *_weight that is "
+            "excluding them (set to a value > 0 to keep those pairs)."
+        )
     val_size = max(1, int(n * val_fraction))
     train_size = n - val_size
 

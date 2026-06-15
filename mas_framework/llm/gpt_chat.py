@@ -8,8 +8,13 @@ Used for two purposes:
 Connection is controlled by env vars read at import time:
   LOCAL_BASE_URL   (default: http://localhost:11434/v1)
   LOCAL_API_KEY    (default: ollama)
+  MODEL_ENDPOINTS  optional JSON {model_name: base_url} for multi-model pools
+                   where each pool member is served by its own vLLM process
+                   on a different port. Models not listed fall back to
+                   LOCAL_BASE_URL; all endpoints share LOCAL_API_KEY.
 """
 
+import json
 import os
 from typing import List, Union, Optional, Any, Dict
 
@@ -24,6 +29,9 @@ from mas_framework.llm.llm_registry import LLMRegistry
 load_dotenv()
 LOCAL_BASE_URL = os.getenv("LOCAL_BASE_URL", "http://localhost:11434/v1")
 LOCAL_API_KEY  = os.getenv("LOCAL_API_KEY",  "ollama")
+MODEL_ENDPOINTS: Dict[str, str] = (
+    json.loads(os.environ["MODEL_ENDPOINTS"]) if os.getenv("MODEL_ENDPOINTS") else {}
+)
 
 
 @LLMRegistry.register('GPTChat')
@@ -65,7 +73,8 @@ class GPTChat(LLM):
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max_tokens
 
-        client = AsyncOpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
+        base_url = MODEL_ENDPOINTS.get(self.model_name, LOCAL_BASE_URL)
+        client = AsyncOpenAI(base_url=base_url, api_key=LOCAL_API_KEY)
         completion = await client.chat.completions.create(**create_kwargs)
 
         if completion.usage:

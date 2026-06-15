@@ -1,0 +1,5 @@
+{
+  "Qwen/Qwen3-4B": "Qwen3 4B: a mid-sized general-purpose model with strong mathematical reasoning, step-by-step problem solving and solid code generation. Moderate inference cost.",
+  "Qwen/Qwen3-1.7B": "Qwen3 1.7B: a small, fast instruction-following model. Good at summarising, reviewing and aggregating other agents' answers, and simple arithmetic. Low inference cost, weaker at multi-step reasoning.",
+  "Qwen/Qwen3-0.6B": "Qwen3 0.6B: a very small, very fast model best suited for short formatting, extraction or single-step lookups. Lowest inference cost, weak at multi-step reasoning and math."
+}
