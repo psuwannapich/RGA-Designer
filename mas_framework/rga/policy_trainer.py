@@ -87,6 +87,11 @@ def sample_with_logprob(
         for r, e in role_embeddings_dict_full.items()
     }
 
+    use_model_selection = getattr(model, "use_model_selection", False)
+    proc_model_embs = (model.model_processor(model.model_embedding_matrix)
+                       if use_model_selection else None)
+    generated_models: List[str] = []
+
     # Accumulated log-prob (scalar tensor, keeps grad_fn)
     log_prob = torch.zeros(1, device=device)
 
@@ -148,7 +153,20 @@ def sample_with_logprob(
         role = model.id_to_role[node_type_id]
         generated_roles.append(role)
         role_emb = processed_role_embs.get(role, torch.zeros(model.embedding_dim, device=device))
-        node_embeddings.append(role_emb.clone())
+
+        if use_model_selection:
+            # Sample the base model conditioned on hidden state + role;
+            # accumulate log π(model | role, context) for GRPO.
+            m_in = torch.cat([node_out.squeeze(0).squeeze(0), role_emb], dim=-1)
+            m_scores = torch.matmul(model.output_model(m_in), proc_model_embs.t())
+            m_probs = F.softmax(m_scores, dim=-1)
+            m_id = int(torch.multinomial(m_probs, 1).item())
+            log_prob = log_prob + torch.log(m_probs[m_id] + EPS)
+            generated_models.append(model.id_to_model[m_id])
+            node_emb = model.combine_role_model(role_emb, model.model_embedding_matrix[m_id])
+        else:
+            node_emb = role_emb
+        node_embeddings.append(node_emb.clone())
 
         # ---- Edge generation ----
         active_out = model.embedding_node_to_edge(node_out)   # [1,1,H_edge]
@@ -189,6 +207,12 @@ def sample_with_logprob(
         G.add_node(n, label=model.get_role_id(role), role=role)
         if role in processed_role_embs:
             G.nodes[n]["role_embedding"] = processed_role_embs[role].detach().cpu().numpy()
+        if use_model_selection and n < len(generated_models):
+            m_name = generated_models[n]
+            G.nodes[n]["model"] = m_name
+            m_idx = model.model_to_id[m_name]
+            G.nodes[n]["model_embedding"] = \
+                model.model_embedding_matrix[m_idx].detach().cpu().numpy()
 
     for n in range(real_num_nodes):
         for j in range(min(model.num_nodes_to_consider, n)):
@@ -240,6 +264,10 @@ def compute_logprob_for_graph(
         r: torch.tensor(e, device=device).float()
         for r, e in role_embeddings_dict_full.items()
     }
+
+    use_model_selection = getattr(model, "use_model_selection", False)
+    proc_model_embs = (model.model_processor(model.model_embedding_matrix)
+                       if use_model_selection else None)
 
     log_prob = torch.zeros(1, device=device)
 
@@ -298,7 +326,23 @@ def compute_logprob_for_graph(
         role_emb = processed_role_embs.get(
             role, torch.zeros(model.embedding_dim, device=device)
         )
-        node_embeddings.append(role_emb.clone())
+
+        if use_model_selection:
+            # Teacher-force the base-model choice recorded on the graph node.
+            m_name = graph.nodes[i].get("model")
+            m_idx = model.model_to_id.get(m_name, -1) if m_name else -1
+            if m_idx >= 0:
+                m_in = torch.cat([node_out.squeeze(0).squeeze(0), role_emb], dim=-1)
+                m_scores = torch.matmul(model.output_model(m_in), proc_model_embs.t())
+                m_probs = F.softmax(m_scores, dim=-1)
+                log_prob = log_prob + torch.log(m_probs[m_idx] + EPS)
+                model_emb = model.model_embedding_matrix[m_idx]
+            else:
+                model_emb = torch.zeros(model.embedding_dim, device=device)
+            node_emb = model.combine_role_model(role_emb, model_emb)
+        else:
+            node_emb = role_emb
+        node_embeddings.append(node_emb.clone())
 
         active_out = model.embedding_node_to_edge(node_out)
         edge_input = torch.zeros(1, 1, model.len_edge_vec, device=device)
@@ -352,7 +396,9 @@ class RGAPolicyTrainer:
         kl_coeff: float = 0.1,
         lambda_eff: float = 0.0,
         ref_max_nodes: int = 4,
+        rm_with_model_features: bool = False,
     ):
+        self.rm_with_model_features = rm_with_model_features
         self.policy = policy.to(device)
         self.reward_model = reward_model.to(device)
         self.reward_model.eval()
@@ -379,7 +425,8 @@ class RGAPolicyTrainer:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Convert nx.DiGraph + task embedding into (x, edge_index, batch) for the reward model."""
         snapshot = GraphSnapshot.from_nx(g)
-        pyg = snapshot.to_pyg(task_embedding.detach().cpu().numpy())
+        pyg = snapshot.to_pyg(task_embedding.detach().cpu().numpy(),
+                              with_model_features=self.rm_with_model_features)
         x = pyg.x.to(self.device)
         edge_index = pyg.edge_index.to(self.device)
         batch = torch.zeros(x.size(0), dtype=torch.long, device=self.device)

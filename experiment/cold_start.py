@@ -240,6 +240,13 @@ async def evaluate_and_save(
         realized = copy.deepcopy(graph)
         input_dict = {"task": record["task"]}
         flow_graph = realized.to_pyg_graph(input_dict)
+        # Multi-model mode: re-roll each node's base model per task so the
+        # cold-start data covers diverse (role, model) combinations.  The
+        # assignment is stored in the node features and used by TestGraph.
+        model_pool_names = getattr(args, 'model_pool_names', None)
+        if model_pool_names:
+            for node_feature in flow_graph.x:
+                node_feature['model'] = random.choice(model_pool_names)
         tg = TestGraph(
             domain=args.dataset,
             llm_name=args.llm_name,
@@ -323,7 +330,15 @@ def parse_args():
                         default='datasets/gsm8k/gsm8k.jsonl',
                         help='Path to the dataset JSONL file')
     parser.add_argument('--llm_name', type=str, default='gemma3',
-                        help='Ollama model name (e.g. gemma3, gemma:2b, llama3.2)')
+                        help='Ollama model name (e.g. gemma3, gemma:2b, llama3.2). '
+                             'Used for the decision node, and for all agent nodes '
+                             'when --model_pool is unset.')
+    parser.add_argument('--model_pool', type=str, default=None,
+                        help='Base-model pool for per-node model assignment: a JSON file '
+                             '({name: description}), a comma-separated list of model names, '
+                             'or "default" for the built-in pool. When set, each agent node '
+                             'is assigned a random model from the pool and the assignment is '
+                             'recorded in the saved graphs (multi-model training data).')
     parser.add_argument('--output_dir', type=str, default='ColdStartData_gemma',
                         help='Directory to save generated .pt graph files')
     parser.add_argument('--num_tasks', type=int, default=0,
@@ -449,6 +464,17 @@ async def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Output directory: {args.output_dir}")
+
+    # Resolve the multi-model pool (unset → single-model mode).  The embedding
+    # cache is written next to the graphs so the ARGDesigner trainer finds it.
+    args.model_pool_names = None
+    if args.model_pool:
+        from mas_framework.llm.model_pool import load_model_pool, precompute_model_embeddings
+        pool = load_model_pool(None if args.model_pool == 'default' else args.model_pool)
+        args.model_pool_names = list(pool.keys())
+        precompute_model_embeddings(
+            pool, os.path.join(args.output_dir, 'precomputed_model_embeddings.pkl'))
+        print(f"Model pool ({len(pool)}): {args.model_pool_names}")
 
     # Rejected graphs go here — separate from training data so the ARGDesigner
     # trainer never sees them.  Used only as the rejected side of RLHF pairs.

@@ -270,7 +270,9 @@ def load_dataset(dataset: str, dataset_path: str, task_split_path: str,
 def serialize_graph(g) -> dict:
     """Convert a NetworkX graph to a JSON-serialisable dict."""
     return {
-        'nodes': [{'id': n, 'role': g.nodes[n].get('role', 'Unknown')}
+        'nodes': [{'id': n,
+                   'role': g.nodes[n].get('role', 'Unknown'),
+                   'model': g.nodes[n].get('model')}
                   for n in sorted(g.nodes())],
         'edges': [[int(u), int(v)] for u, v in g.edges()],
     }

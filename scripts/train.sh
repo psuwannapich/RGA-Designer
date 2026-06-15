@@ -100,6 +100,10 @@ BATCH_SIZE="${BATCH_SIZE:-16}"
 NUM_ROUNDS="${NUM_ROUNDS:-1}"
 SEED="${SEED:-42}"
 
+# Multi-model: pool spec ("default", comma-separated names, or JSON path).
+# Unset = single-model pipeline (original behaviour).
+MODEL_POOL="${MODEL_POOL:-}"
+
 EPOCHS="${EPOCHS:-30}"
 TRAIN_LR="${TRAIN_LR:-1e-4}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
@@ -151,7 +155,8 @@ else
         --llm_name "$HF_MODEL" --output_dir "$COLD_START_DIR" \
         --num_tasks "$NUM_TASKS" --num_iterations "$NUM_ITERATIONS" \
         --batch_size "$BATCH_SIZE" --num_rounds "$NUM_ROUNDS" \
-        --min_agents "$MIN_AGENTS" --max_agents "$MAX_AGENTS" --seed "$SEED"
+        --min_agents "$MIN_AGENTS" --max_agents "$MAX_AGENTS" --seed "$SEED" \
+        ${MODEL_POOL:+--model_pool "$MODEL_POOL"}
 
     mark_done stage1_cold_start
 fi
@@ -166,7 +171,8 @@ else
         --dataset "$DATASET" --data_dir "$COLD_START_DIR" \
         --output_dir "$CHECKPOINT_DIR" --epochs "$EPOCHS" \
         --lr "$TRAIN_LR" --batch_size "$TRAIN_BATCH_SIZE" \
-        --val_ratio "$VAL_RATIO" --seed "$SEED"
+        --val_ratio "$VAL_RATIO" --seed "$SEED" \
+        ${MODEL_POOL:+--model_pool "$MODEL_POOL"}
 
     mark_done stage2_pretrain
 fi
@@ -182,7 +188,8 @@ else
         --cold_start_dir "$COLD_START_DIR" --checkpoint_dir "$CHECKPOINT_DIR" \
         --output_dir "$CHECKPOINT_DIR" --llm_name "$HF_MODEL" \
         --pruning_ratio "$PRUNING_RATIO" --replay_ratio "$REPLAY_RATIO" \
-        --batch_size "$BATCH_SIZE" --seed "$SEED"
+        --batch_size "$BATCH_SIZE" --seed "$SEED" \
+        ${MODEL_POOL:+--model_pool "$MODEL_POOL"}
 
     mark_done stage3a_build_deff
 fi

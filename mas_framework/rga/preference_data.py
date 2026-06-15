@@ -62,10 +62,15 @@ class GraphSnapshot:
             emb = data.get("role_embedding", None)
             if isinstance(emb, (np.ndarray, torch.Tensor)):
                 emb = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+            model_emb = data.get("model_embedding", None)
+            if isinstance(model_emb, (np.ndarray, torch.Tensor)):
+                model_emb = model_emb.tolist() if hasattr(model_emb, "tolist") else list(model_emb)
             nodes.append({
                 "id": int(n),
                 "role": data.get("role", "Unknown"),
                 "role_embedding": emb,
+                "model": data.get("model"),
+                "model_embedding": model_emb,
             })
         edges = [(int(u), int(v)) for u, v in g.edges()]
         return cls(nodes=nodes, edges=edges, num_nodes=g.number_of_nodes())
@@ -76,15 +81,22 @@ class GraphSnapshot:
             attrs = {"role": nd["role"]}
             if nd["role_embedding"] is not None:
                 attrs["role_embedding"] = np.array(nd["role_embedding"], dtype=np.float32)
+            if nd.get("model") is not None:
+                attrs["model"] = nd["model"]
+            if nd.get("model_embedding") is not None:
+                attrs["model_embedding"] = np.array(nd["model_embedding"], dtype=np.float32)
             g.add_node(nd["id"], **attrs)
         for u, v in self.edges:
             g.add_edge(u, v, label=1)
         return g
 
-    def to_pyg(self, task_embedding: Optional[np.ndarray] = None) -> Data:
-        """Convert to a PyG Data object with 773-dim node features.
+    def to_pyg(self, task_embedding: Optional[np.ndarray] = None,
+               with_model_features: bool = False) -> Data:
+        """Convert to a PyG Data object with 773-dim node features
+        (1157-dim when with_model_features=True).
 
         Node feature = concat(role_embedding[384], task_embedding[384],
+                              [model_embedding[384] if with_model_features,]
                               structural_features[5]).
         Falls back to zero vectors when embeddings are missing.
 
@@ -111,12 +123,19 @@ class GraphSnapshot:
 
         node_feats = []
         struct_feats = []
+        model_feats = []
         for i, nd in enumerate(self.nodes):
             if nd["role_embedding"] is not None:
                 role_emb = torch.tensor(nd["role_embedding"], dtype=torch.float32)
             else:
                 role_emb = torch.zeros(EMB_DIM)
             node_feats.append(role_emb)
+
+            if with_model_features:
+                if nd.get("model_embedding") is not None:
+                    model_feats.append(torch.tensor(nd["model_embedding"], dtype=torch.float32))
+                else:
+                    model_feats.append(torch.zeros(EMB_DIM))
 
             # Structural scalars — all in [0, 1]
             norm_denom = max(N - 1, 1)
@@ -130,13 +149,16 @@ class GraphSnapshot:
 
         x_role   = torch.stack(node_feats) if node_feats else torch.zeros(1, EMB_DIM)
         x_struct = torch.tensor(struct_feats, dtype=torch.float32)  # [N, 5]
+        x_model  = None
+        if with_model_features:
+            x_model = torch.stack(model_feats) if model_feats else torch.zeros(1, EMB_DIM)
 
         if task_embedding is not None:
             t_emb = torch.tensor(task_embedding, dtype=torch.float32)
         else:
             t_emb = torch.zeros(EMB_DIM)
 
-        x = build_node_features(x_role, t_emb, x_struct)   # [N, 773]
+        x = build_node_features(x_role, t_emb, x_struct, x_model)   # [N, 773 or 1157]
 
         if self.edges:
             edge_index = torch.tensor(self.edges, dtype=torch.long).t().contiguous()
@@ -310,7 +332,9 @@ class PreferencePairDataset(Dataset):
         data_dir: "Union[str, List[str]]",
         exclude_both_wrong: bool = False,
         exclude_both_correct: bool = False,
+        with_model_features: bool = False,
     ):
+        self.with_model_features = with_model_features
         dirs: List[str] = [data_dir] if isinstance(data_dir, str) else list(data_dir)
 
         all_shard_paths: List[str] = []
@@ -413,8 +437,10 @@ class PreferencePairDataset(Dataset):
         pair: PreferencePair = self._shard_cache[path][local_idx]
 
         task_emb = torch.tensor(pair.task_embedding, dtype=torch.float32)
-        chosen_pyg = pair.chosen_graph.to_pyg(pair.task_embedding)
-        rejected_pyg = pair.rejected_graph.to_pyg(pair.task_embedding)
+        chosen_pyg = pair.chosen_graph.to_pyg(
+            pair.task_embedding, with_model_features=self.with_model_features)
+        rejected_pyg = pair.rejected_graph.to_pyg(
+            pair.task_embedding, with_model_features=self.with_model_features)
 
         return {
             "chosen": chosen_pyg,

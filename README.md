@@ -68,6 +68,35 @@ Or using global reward model fine-tuning across datasets:
 bash scripts/rga_global_rm.sh
 ```
 
+## Multi-Model Generation
+
+By default every agent shares one base model (`HF_MODEL`). Setting `MODEL_POOL`
+enables a **factorized model-selection head** on the graph generator: each
+autoregressive node step samples a role *and* a base model,
+`p(G|task) = Πᵢ p(roleᵢ|hist) · p(modelᵢ|roleᵢ,hist) · Πⱼ p(edgeᵢⱼ|hist)`.
+Models are scored by similarity against sentence embeddings of short model
+descriptions (mirroring role selection), so the pool can be extended at
+inference time without retraining.
+
+```bash
+# Built-in local pool (Qwen/Qwen3-4B, llama3.2, gemma3)
+MODEL_POOL=default DATASET=gsm8k bash scripts/train.sh
+MODEL_POOL=default DATASET=gsm8k bash scripts/rga.sh
+
+# Custom pool: comma-separated names, or a JSON file {name: description}
+MODEL_POOL="Qwen/Qwen3-4B,llama3.2" DATASET=gsm8k bash scripts/train.sh
+MODEL_POOL=my_pool.json DATASET=gsm8k bash scripts/train.sh
+```
+
+In multi-model mode, cold-start assigns each agent node a random pool model and
+records it in the training graphs; the execution engine instantiates every
+agent with its own LLM; and the RGA reward model conditions on per-node model
+embeddings (`--rm_model_features`, on by default when `MODEL_POOL` is set).
+Leaving `MODEL_POOL` unset reproduces the original single-model pipeline
+exactly — the head is the ablation switch. To reuse legacy single-model
+cold-start data, pass `--default_node_model <llm_name>` to `pretrain.py` to
+backfill model labels.
+
 ## Repository Structure
 
 ```

@@ -61,7 +61,7 @@ def parse_args():
 def deserialize_graph(d: dict) -> nx.DiGraph:
     G = nx.DiGraph()
     for node in d['nodes']:
-        G.add_node(int(node['id']), role=node['role'])
+        G.add_node(int(node['id']), role=node['role'], model=node.get('model'))
     for u, v in d['edges']:
         G.add_edge(int(u), int(v))
     return G

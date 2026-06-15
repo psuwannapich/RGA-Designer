@@ -160,6 +160,24 @@ class BFS_Graph_to_Adj_Matrix(Graph_to_Adj_Matrix):
                     print(f"Warning: node {node_idx} has role but no embedding")
 
         result['role_embeddings'] = role_embeddings
+
+        # Per-node base-model labels for the factorized model-selection head,
+        # aligned with the same perm as the role embeddings.  id -1 = unlabeled
+        # (excluded from the model CE loss).
+        model = getattr(self, 'model', None)
+        if model is not None and getattr(model, 'use_model_selection', False):
+            max_nodes = self.data_statistics["max_num_nodes"]
+            model_ids = torch.full((max_nodes,), -1, dtype=torch.long)
+            model_embeddings = torch.zeros((max_nodes, embedding_dim))
+            emb_matrix = model.model_embedding_matrix.detach().cpu()
+            for i, node_idx in enumerate(perm):
+                mid = model.get_model_id(graph.nodes[node_idx].get('model'))
+                model_ids[i] = mid
+                if mid >= 0:
+                    model_embeddings[i] = emb_matrix[mid]
+            result['model_ids'] = model_ids
+            result['model_embeddings'] = model_embeddings
+
         return result
 
     def graph_to_matrix(self, in_graph, perm):
@@ -401,6 +419,55 @@ class ARGDesigner(nn.Module):
         full_embedding_matrix = torch.cat([base_role_embeddings, start_embedding, end_embedding], dim=0)
         self.register_buffer('full_embedding_matrix', full_embedding_matrix)
 
+        # ---- Factorized base-model selection head (multi-model MAS) ----
+        # Active only when a pool of >= 2 base models is configured; otherwise
+        # the architecture and behaviour are identical to single-model ARGDesigner.
+        # p(G|task) = prod_i p(role_i|hist) * p(model_i|role_i,hist) * prod_j p(edge_ij|hist)
+        self.model_pool = list(getattr(args, 'model_pool', []) or [])
+        self.use_model_selection = len(self.model_pool) >= 2
+        if self.use_model_selection:
+            from mas_framework.llm.model_pool import get_model_embeddings
+            self.model_to_id = {m: i for i, m in enumerate(self.model_pool)}
+            self.id_to_model = {i: m for i, m in enumerate(self.model_pool)}
+            self.model_loss_weight = getattr(args, 'model_loss_weight', 0.2)
+
+            descriptions = getattr(args, 'model_descriptions', None) or {}
+            pool_with_desc = {m: descriptions.get(m, m) for m in self.model_pool}
+            emb_cache = os.path.join(args.data_dir, 'precomputed_model_embeddings.pkl')
+            model_embs = get_model_embeddings(pool_with_desc, emb_cache)
+            model_embedding_matrix = torch.stack(
+                [model_embs[m].view(self.embedding_dim).float() for m in self.model_pool], dim=0)
+            self.register_buffer('model_embedding_matrix', model_embedding_matrix)
+
+            # Scores [h_i ; role_emb_i] against semantic model embeddings,
+            # mirroring the similarity-based role selection.
+            self.model_processor = MLP_Basic(
+                self.embedding_dim,
+                self.embedding_dim // 2,
+                self.embedding_dim
+            )
+            self.output_model = MLP_Basic(
+                args.hidden_size_node_level_transformer + self.embedding_dim,
+                args.embedding_size_node_output,
+                self.embedding_dim
+            )
+            # Fuses (role, model) into one history embedding so later steps
+            # condition on the model assignments of previous nodes.
+            self.history_combiner = nn.Linear(2 * self.embedding_dim, self.embedding_dim)
+            print(f"Model-selection head enabled: pool={self.model_pool}")
+
+    def get_model_id(self, model_name):
+        if not self.use_model_selection or model_name is None:
+            return -1
+        return self.model_to_id.get(model_name, -1)
+
+    def combine_role_model(self, role_emb, model_emb):
+        """History embedding for one or more nodes: fused (role, model) when the
+        model head is active, plain role embedding otherwise."""
+        if not self.use_model_selection:
+            return role_emb
+        return self.history_combiner(torch.cat([role_emb, model_emb], dim=-1))
+
     def get_role_id(self, role):
         if role in self.role_to_id:
             return self.role_to_id[role]
@@ -438,6 +505,17 @@ class ARGDesigner(nn.Module):
         x_len, sort_indices = torch.sort(x_len_unsorted, descending=True)
         x = x_unsorted.index_select(0, sort_indices)
         role_embeddings = role_embeddings.index_select(0, sort_indices)
+
+        model_ids = None
+        if self.use_model_selection:
+            model_ids = data_batch['model_ids'].to(self.args.device)[:, :x_len_max]
+            model_embeddings = data_batch['model_embeddings'].to(self.args.device)[:, :x_len_max, :]
+            model_ids = model_ids.index_select(0, sort_indices)
+            model_embeddings = model_embeddings.index_select(0, sort_indices)
+            history_embeddings = self.combine_role_model(role_embeddings, model_embeddings)
+        else:
+            history_embeddings = role_embeddings
+
         if task_embedding is not None:
             task_embedding = task_embedding.index_select(0, sort_indices)
             task_embedding = self.task_processor(task_embedding)
@@ -445,7 +523,7 @@ class ARGDesigner(nn.Module):
         prev_nodes_embeddings = torch.zeros_like(role_embeddings)
         for b in range(batch_size):
             for i in range(1, x_len[b].item()):
-                prev_embs = role_embeddings[b, :i, :]
+                prev_embs = history_embeddings[b, :i, :]
                 if prev_embs.size(0) > 0:
                     _, h_agg = self.prev_nodes_aggregator(prev_embs.unsqueeze(0))
                     h_node = h_agg.squeeze(0).squeeze(0)
@@ -480,6 +558,22 @@ class ARGDesigner(nn.Module):
         role_embedding = self.role_processor(self.full_embedding_matrix)
         x_pred_node = torch.matmul(x_pred_node, role_embedding.t())
         x_pred_node = torch.softmax(x_pred_node, dim=-1)
+
+        # Model-selection head: position t of node_level_output predicts node t,
+        # conditioned on the teacher-forced role embedding of node t.
+        loss_model = torch.zeros(batch_size, device=self.args.device)
+        if self.use_model_selection:
+            head_in = torch.cat((node_level_output[:, :x_len_max, :], role_embeddings), dim=-1)
+            pred_model_emb = self.output_model(head_in)                            # [B, T, 384]
+            proc_model_embs = self.model_processor(self.model_embedding_matrix)   # [M, 384]
+            model_logits = torch.matmul(pred_model_emb, proc_model_embs.t())      # [B, T, M]
+            labeled = model_ids >= 0
+            if labeled.any():
+                ce = F.cross_entropy(model_logits[labeled], model_ids[labeled], reduction='none')
+                batch_index = torch.arange(batch_size, device=self.args.device) \
+                    .unsqueeze(1).expand(-1, x_len_max)[labeled]
+                loss_model = loss_model.index_add(0, batch_index, ce)
+
         x_len = x_len.cpu()
         edge_mat_packed = pack_padded_sequence(
             x[:, :, len_node_vec: min(x_len_max - 1, num_nodes_to_consider) * len_edge_vec + len_node_vec],
@@ -562,6 +656,8 @@ class ARGDesigner(nn.Module):
 
         alpha = 0.2
         loss = alpha * loss_node + (1 - alpha) * loss_edge
+        if self.use_model_selection:
+            loss = loss + self.model_loss_weight * loss_model
         swapped_loss = torch.empty_like(loss)
         swapped_loss[sort_indices] = loss
 
@@ -610,12 +706,16 @@ class ARGDesigner(nn.Module):
         else:
             most_similar_roles = all_roles[:5] if len(all_roles) >= 5 else all_roles
 
+        proc_model_embs = (self.model_processor(self.model_embedding_matrix)
+                           if self.use_model_selection else None)
+
         generated_graphs = []
         for batch_idx in range(num_samples // batch_size):
             x_pred_node = np.zeros((batch_size, max_num_node), dtype=np.int32)
             x_pred_edge = np.zeros((batch_size, max_num_node, self.num_nodes_to_consider), dtype=np.int32)
             real_num_nodes = [max_num_node] * batch_size
             generated_roles = [[] for _ in range(batch_size)]
+            generated_models = [[] for _ in range(batch_size)]
             sampled_node_ids = []
             node_embeddings = [[] for _ in range(batch_size)]
 
@@ -686,7 +786,19 @@ class ARGDesigner(nn.Module):
                         else:
                             role_emb = torch.randn(self.embedding_dim, device=self.args.device).float()
                             processed_role_embeddings[selected_role] = role_emb
-                        node_embeddings[b].append(role_emb.clone())
+                        if self.use_model_selection:
+                            # Sample the base model conditioned on hidden state + role
+                            h_b = active_out[idx_b, 0, :]
+                            m_pred = self.output_model(torch.cat([h_b, role_emb], dim=-1))
+                            m_scores = torch.matmul(m_pred, proc_model_embs.t())
+                            m_probs = F.softmax(m_scores / temperature, dim=-1)
+                            m_id = int(torch.multinomial(m_probs, 1).item())
+                            generated_models[b].append(self.id_to_model[m_id])
+                            node_emb = self.combine_role_model(
+                                role_emb, self.model_embedding_matrix[m_id])
+                        else:
+                            node_emb = role_emb
+                        node_embeddings[b].append(node_emb.clone())
                     else:
                         if real_num_nodes[b] == max_num_node:
                             real_num_nodes[b] = i
@@ -734,6 +846,8 @@ class ARGDesigner(nn.Module):
                         if role in processed_role_embeddings:
                             emb = processed_role_embeddings[role].cpu().numpy()
                             G.nodes[n]['role_embedding'] = emb
+                        if self.use_model_selection and n < len(generated_models[b]):
+                            G.nodes[n]['model'] = generated_models[b][n]
                 for n in range(n_real):
                     if int(x_pred_node[b, n]) == temp_end_idx:
                         continue
@@ -780,6 +894,8 @@ class ARGDesigner(nn.Module):
                 G.graph['agent_nums'] = self.data_statistics.get('agent_nums', 1)
                 G.graph['is_correct'] = False
                 G.graph['roles'] = generated_roles[b][:n_real]
+                if self.use_model_selection:
+                    G.graph['models'] = generated_models[b][:n_real]
                 G.graph['sampled_node_types'] = [int(sampled_node_ids[i][b]) for i in range(n_real)]
                 generated_graphs.append(G)
 

@@ -182,10 +182,11 @@ def build_node_features(
     role_embeddings: torch.Tensor,          # [N, 384]
     task_embedding: torch.Tensor,           # [384]  (single task, broadcast to all nodes)
     structural_features: torch.Tensor,      # [N, 5]  per-node structural scalars
-) -> torch.Tensor:                          # [N, 773]
+    model_embeddings: torch.Tensor = None,  # [N, 384] optional per-node base-model embeddings
+) -> torch.Tensor:                          # [N, 773] (or [N, 1157] with model embeddings)
     """
-    Concatenate role embedding, broadcast task embedding, and per-node
-    structural features.
+    Concatenate role embedding, broadcast task embedding, optional base-model
+    embedding (multi-model graphs), and per-node structural features.
 
     Structural features (5 scalars, all in [0, 1]):
       0: num_nodes / 6          — graph size (same for all nodes in graph)
@@ -200,4 +201,8 @@ def build_node_features(
     """
     N = role_embeddings.size(0)
     task_broadcast = task_embedding.unsqueeze(0).expand(N, -1)
-    return torch.cat([role_embeddings, task_broadcast, structural_features], dim=-1)
+    parts = [role_embeddings, task_broadcast]
+    if model_embeddings is not None:
+        parts.append(model_embeddings)
+    parts.append(structural_features)
+    return torch.cat(parts, dim=-1)

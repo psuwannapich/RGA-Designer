@@ -93,6 +93,11 @@ def parse_args():
     p.add_argument('--output_dir', required=True,
                    help='Directory to save D_eff data and ef_best_model.pth')
     p.add_argument('--llm_name', type=str, default='Qwen/Qwen3-8B')
+    p.add_argument('--model_pool', type=str, default=None,
+                   help='Base-model pool for per-node model assignment in D_simple '
+                        'generation (JSON file, comma-separated names, or "default"). '
+                        'D_pruned graphs already carry the models chosen by the '
+                        'Phase-1 policy. Unset = single-model mode.')
     p.add_argument('--pruning_ratio', type=float, default=0.25,
                    help='Fraction of edges to prune per graph')
     p.add_argument('--replay_ratio', type=float, default=0.3,
@@ -281,11 +286,23 @@ async def generate_simple_data(args, dataset: list, output_dir: str, rlhf_dir: s
     total = len(configs) * len(dataset)
     pbar = tqdm(total=total, desc="D_simple (all configs)")
 
+    model_pool_names = None
+    if getattr(args, 'model_pool', None):
+        from mas_framework.llm.model_pool import load_model_pool
+        pool = load_model_pool(None if args.model_pool == 'default' else args.model_pool)
+        model_pool_names = list(pool.keys())
+        print(f"  Model pool ({len(model_pool_names)}): {model_pool_names}")
+
     async def _simple_one(global_idx: int, record: dict, mode: str, agent_num: int) -> None:
         nonlocal saved
         realized = copy.deepcopy(config_graphs[(mode, agent_num)])
         input_dict = {'task': record['task']}
         flow_graph = realized.to_pyg_graph(input_dict)
+        # Multi-model mode: re-roll each node's base model per task (as in
+        # cold_start) so D_simple covers diverse (role, model) combinations.
+        if model_pool_names:
+            for node_feature in flow_graph.x:
+                node_feature['model'] = random.choice(model_pool_names)
         tg = TestGraph(
             domain=args.dataset,
             llm_name=args.llm_name,

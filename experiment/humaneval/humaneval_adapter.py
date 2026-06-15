@@ -115,6 +115,7 @@ class HumanevalGraphDataset:
                     nx_graph.nodes[i]['role'] = role
                     nx_graph.nodes[i]['role_id'] = role_to_id[role]
                     nx_graph.nodes[i]['label'] = role_to_id[role]
+                    nx_graph.nodes[i]['model'] = node_data.get('model')
                     nx_graph.role_embeddings[i] = embedding
 
                 if hasattr(pyg_graph, 'edge_index'):

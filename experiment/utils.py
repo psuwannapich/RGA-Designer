@@ -169,7 +169,8 @@ def convert_to_pyg_graph(nx_graph, task_text):
     for i in range(num_nodes):
         features.append({
             'role': nx_graph.nodes[i].get('role', 'Unknown'),
-            'constraint': nx_graph.nodes[i].get('constraint', '')
+            'constraint': nx_graph.nodes[i].get('constraint', ''),
+            'model': nx_graph.nodes[i].get('model')
         })
     pyg.x = features
     edges = [[u, v] for u, v in nx_graph.edges()]

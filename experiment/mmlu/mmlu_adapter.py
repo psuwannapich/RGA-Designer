@@ -109,6 +109,7 @@ class MMLUGraphDataset:
                     embedding = self.precomputed_embeddings[role]
 
                     nx_graph.nodes[i]['role'] = role
+                    nx_graph.nodes[i]['model'] = node_data.get('model')
                     if constraint:
                         nx_graph.nodes[i]['constraint'] = constraint
                     nx_graph.nodes[i]['role_id'] = role_to_id.get(role, 0)

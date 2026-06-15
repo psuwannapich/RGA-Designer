@@ -42,6 +42,14 @@ class Args:
                                  help='whether to use clip gradient for generation model')
         self.parser.add_argument('--role_mapping_path', type=str, default=None,
                         help='Path to predefined role mapping file, if provided will load role mapping from here')
+        self.parser.add_argument('--model_pool', type=str, default=None,
+                        help='Base-model pool for per-node model selection: a JSON file '
+                             '({name: description}), a comma-separated list of model names, '
+                             'or "default" for the built-in pool. Unset = single-model mode '
+                             '(no model-selection head).')
+        self.parser.add_argument('--model_loss_weight', type=float, default=0.2,
+                        help='Weight of the model-selection cross-entropy term in the '
+                             'ARGDesigner training loss')
 
     def update_args_from_dict(self, args_dict):
         """
@@ -68,4 +76,16 @@ class Args:
                 print(f"Loaded {len(args.role_mapping)} role mappings from {args.role_mapping_path}")
             except Exception as e:
                 print(f"Failed to load role mapping: {e}")
+        # Resolve the model pool spec into an ordered name list + descriptions.
+        # ARGDesigner enables its model-selection head when the list has >= 2 entries.
+        if getattr(args, 'model_pool', None):
+            from mas_framework.llm.model_pool import load_model_pool
+            spec = None if args.model_pool == 'default' else args.model_pool
+            pool = load_model_pool(spec)
+            args.model_descriptions = pool
+            args.model_pool = list(pool.keys())
+            print(f"Model pool ({len(args.model_pool)}): {args.model_pool}")
+        else:
+            args.model_pool = []
+            args.model_descriptions = {}
         return args

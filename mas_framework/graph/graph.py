@@ -188,7 +188,9 @@ class Graph(ABC):
         for agent_name, kwargs in zip(self.agent_names, self.node_kwargs):
             if agent_name in AgentRegistry.registry:
                 kwargs["domain"] = self.domain
-                kwargs["llm_name"] = self.llm_name
+                # Per-node llm_name in node_kwargs takes precedence over the
+                # graph-level default (multi-model graphs).
+                kwargs.setdefault("llm_name", self.llm_name)
                 agent_instance = AgentRegistry.get(agent_name, **kwargs)
                 self.add_node(agent_instance)
 
@@ -342,7 +344,7 @@ class Graph(ABC):
         for node in agent_nodes:
             role = node.role
             constraint = node.constraint if hasattr(node, 'constraint') else "No constraint"
-            feature = {'role': role, 'constraint': constraint}
+            feature = {'role': role, 'constraint': constraint, 'model': node.llm_name or None}
             node_features.append(feature)
 
         if keep_all_edge:
@@ -472,6 +474,9 @@ class TestGraph(ABC):
 
         roles = [d['role'] for d in pyg_data.x]
         constraints = [d.get('constraint') for d in pyg_data.x]
+        # Per-node base model; falls back to the graph-level llm_name for
+        # nodes without a model label (single-model graphs, legacy data).
+        models = [d.get('model') for d in pyg_data.x]
         if self.domain == 'mmlu':
             agent_type = 'AnalyzeAgent'
         elif self.domain == 'humaneval':
@@ -484,13 +489,13 @@ class TestGraph(ABC):
             agent_type = 'MathSolver'  # safe default for unknown math domains
         prompt_set = PromptSetRegistry.get(self.domain)
 
-        for idx, (role, constraint) in enumerate(zip(roles, constraints)):
+        for idx, (role, constraint, model) in enumerate(zip(roles, constraints, models)):
             actual_constraint = prompt_set.get_description(role)
 
             agent_kwargs = {
                 'role': role,
                 'domain': self.domain,
-                'llm_name': self.llm_name
+                'llm_name': model or self.llm_name
             }
             if self.domain == 'mmlu':
                 agent_kwargs['constraint'] = actual_constraint

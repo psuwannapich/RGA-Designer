@@ -62,6 +62,18 @@ def parse_args():
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--sample_size", type=int, default=0,
                    help="Cap on number of graphs loaded (0 = all)")
+    p.add_argument("--model_pool", default=None,
+                   help="Base-model pool enabling the per-node model-selection head: "
+                        "a JSON file ({name: description}), a comma-separated list of "
+                        "model names, or 'default' for the built-in pool. "
+                        "Unset = single-model ARGDesigner (no head).")
+    p.add_argument("--model_loss_weight", type=float, default=0.2,
+                   help="Weight of the model-selection CE term in the training loss")
+    p.add_argument("--default_node_model", default=None,
+                   help="Backfill model label for graphs without per-node 'model' "
+                        "attributes (e.g. legacy single-model cold-start data). "
+                        "Typically the --llm_name the data was generated with. "
+                        "Unlabeled nodes are excluded from the model loss otherwise.")
     return p.parse_args()
 
 
@@ -102,6 +114,26 @@ def main():
             f"No graphs loaded from '{cli.data_dir}'. "
             "Run cold-start first: uv run cold-start --dataset {cli.dataset} ..."
         )
+
+    # ---- Multi-model pool ----------------------------------------------------
+    if cli.model_pool:
+        from mas_framework.llm.model_pool import load_model_pool
+        pool = load_model_pool(None if cli.model_pool == "default" else cli.model_pool)
+        pre.model_pool = list(pool.keys())
+        pre.model_descriptions = pool
+        pre.model_loss_weight = cli.model_loss_weight
+        print(f"Model pool ({len(pre.model_pool)}): {pre.model_pool}")
+        if cli.default_node_model:
+            n_backfilled = 0
+            for g in ds.graph_list:
+                for _, data in g.nodes(data=True):
+                    if not data.get("model"):
+                        data["model"] = cli.default_node_model
+                        n_backfilled += 1
+            print(f"Backfilled 'model'={cli.default_node_model!r} on {n_backfilled} unlabeled nodes")
+    else:
+        pre.model_pool = []
+        pre.model_descriptions = {}
 
     # ---- Role mapping -------------------------------------------------------
     role_to_id = ds.role_to_id

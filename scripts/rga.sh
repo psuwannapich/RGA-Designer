@@ -95,6 +95,12 @@ fi
 # ---- Hyperparameters --------------------------------------------------------
 SEED="${SEED:-42}"
 
+# Multi-model: pool spec ("default", comma-separated names, or JSON path).
+# Should match the pool used in scripts/train.sh.  When set, the reward model
+# defaults to model-aware node features (override with RM_MODEL_FEATURES=0).
+MODEL_POOL="${MODEL_POOL:-}"
+RM_MODEL_FEATURES="${RM_MODEL_FEATURES:-${MODEL_POOL:+1}}"
+
 # Collect
 RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-100}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rga_data}"
@@ -211,6 +217,7 @@ else
         $([ "${WEAK_BASELINES}"    = "1" ] && echo "--weak_baselines") \
         $([ "${ROLE_SWEEP}"        = "1" ] && echo "--role_sweep --role_sweep_topology $ROLE_SWEEP_TOPOLOGY --role_sweep_n_agents $ROLE_SWEEP_N_AGENTS") \
         ${ROLE_SWEEP_MAX_COMBOS:+$([ "${ROLE_SWEEP}" = "1" ] && echo "--role_sweep_max_combos $ROLE_SWEEP_MAX_COMBOS")} \
+        ${MODEL_POOL:+--model_pool "$MODEL_POOL"} \
         $(_coldstart_dirs_flag)
 
     mark_done stage1a_gen_candidates
@@ -233,6 +240,7 @@ else
         --task_concurrency "$TASK_CONCURRENCY" \
         --inference_concurrency "$INFERENCE_CONCURRENCY" \
         --llm_timeout "$LLM_TIMEOUT" --seed "$SEED" \
+        ${MODEL_POOL:+--model_pool "$MODEL_POOL"} \
         $(_coldstart_dirs_flag)
 
     mark_done stage1b_collect_llm
@@ -253,7 +261,8 @@ else
         --rm_hidden_dim "$RM_HIDDEN_DIM" --rm_output_dim "$RM_OUTPUT_DIM" \
         --rm_val_fraction "$RM_VAL_FRACTION" \
         --both_wrong_weight "$BOTH_WRONG_WEIGHT" \
-        --both_correct_weight "$BOTH_CORRECT_WEIGHT"
+        --both_correct_weight "$BOTH_CORRECT_WEIGHT" \
+        $([ "${RM_MODEL_FEATURES:-0}" = "1" ] && echo "--rm_model_features")
 
     mark_done stage2_train_rm
 fi

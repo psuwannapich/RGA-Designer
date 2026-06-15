@@ -32,6 +32,7 @@ def train_reward_model(
     both_wrong_weight: float = 0.2,
     both_correct_weight: float = 1.0,
     loss_type: str = "bradley_terry",
+    with_model_features: bool = False,
 ) -> GraphRewardModel:
     """
     Train *model* on preference pairs stored as .pkl shards in *data_dir*.
@@ -76,6 +77,7 @@ def train_reward_model(
         data_dir,
         exclude_both_wrong=(both_wrong_weight == 0.0),
         exclude_both_correct=(both_correct_weight == 0.0),
+        with_model_features=with_model_features,
     )
     n = len(dataset)
     val_size = max(1, int(n * val_fraction))
@@ -199,6 +201,8 @@ def train_reward_model(
                         "epoch": epoch,
                         "val_loss": avg_val_loss,
                         "val_acc": avg_val_acc,
+                        "node_feat_dim": model.node_feat_dim,
+                        "with_model_features": with_model_features,
                     },
                     save_path,
                 )
@@ -218,14 +222,18 @@ def load_reward_model(
     hidden_dim: int = 256,
     output_dim: int = 128,
 ) -> GraphRewardModel:
-    """Load a saved GraphRewardModel checkpoint."""
+    """Load a saved GraphRewardModel checkpoint.
+
+    node_feat_dim is overridden by the value stored in the checkpoint when
+    present (e.g. 1157 for model-aware reward models)."""
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    node_feat_dim = ckpt.get("node_feat_dim", node_feat_dim)
     model = GraphRewardModel(
         node_feat_dim=node_feat_dim,
         hidden_dim=hidden_dim,
         output_dim=output_dim,
     ).to(device)
 
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.eval()

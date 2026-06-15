@@ -71,6 +71,14 @@ _MAX_AGENTS = {
 }
 
 
+def _resolve_model_pool(args):
+    """Resolve --model_pool into a {name: description} dict (None when unset)."""
+    if not getattr(args, "model_pool", None):
+        return None
+    from mas_framework.llm.model_pool import load_model_pool
+    return load_model_pool(None if args.model_pool == "default" else args.model_pool)
+
+
 def _answer_checker(dataset: str):
     """Return a dataset-aware answer checker compatible with RGADataCollector."""
     def checker(predicted: str, ground_truth: str) -> bool:
@@ -279,6 +287,7 @@ def _gen_candidates(args):
         role_sweep_topology=args.role_sweep_topology,
         role_sweep_n_agents=args.role_sweep_n_agents,
         role_sweep_max_combos=args.role_sweep_max_combos,
+        model_pool=_resolve_model_pool(args),
     )
 
     collector.generate_all_candidates(
@@ -343,6 +352,7 @@ async def _collect_llm(args):
         arg_model=None,                  # not needed for scoring
         pruning_ratio=args.pruning_ratio,
         inference_concurrency=args.inference_concurrency,
+        model_pool=_resolve_model_pool(args),
     )
 
     total = await collector.collect_from_candidates(
@@ -433,6 +443,7 @@ async def _collect(args):
         role_sweep_n_agents=args.role_sweep_n_agents,
         role_sweep_max_combos=args.role_sweep_max_combos,
         inference_concurrency=args.inference_concurrency,
+        model_pool=_resolve_model_pool(args),
     )
 
     total = await collector.collect_dataset(
@@ -457,8 +468,12 @@ def _train_rm(args):
     from mas_framework.rga.reward_trainer import train_reward_model
 
     device = torch.device(args.device)
+    # +384 dims for per-node base-model embeddings (multi-model graphs)
+    node_feat_dim = 1157 if args.rm_model_features else 773
+    if args.rm_model_features:
+        print("Reward model conditions on per-node base-model embeddings (1157-dim)")
     model = GraphRewardModel(
-        node_feat_dim=773,
+        node_feat_dim=node_feat_dim,
         hidden_dim=args.rm_hidden_dim,
         output_dim=args.rm_output_dim,
     )
@@ -486,6 +501,7 @@ def _train_rm(args):
         both_wrong_weight=args.both_wrong_weight,
         both_correct_weight=args.both_correct_weight,
         loss_type=args.rm_loss,
+        with_model_features=args.rm_model_features,
     )
 
 
@@ -530,6 +546,9 @@ def _train_policy(args):
         })
 
     print(f"Fine-tuning policy on {len(task_records)} tasks ({args.dataset}) ...")
+    # Model-aware reward models (trained with --rm_model_features) have
+    # 1157-dim node features; match the snapshot conversion accordingly.
+    rm_with_model_features = reward_model.node_feat_dim > 773
     trainer = RGAPolicyTrainer(
         policy=policy,
         reward_model=reward_model,
@@ -538,6 +557,7 @@ def _train_policy(args):
         kl_coeff=args.kl_coeff,
         lambda_eff=args.lambda_eff,
         ref_max_nodes=args.max_agents,
+        rm_with_model_features=rm_with_model_features,
     )
     trainer.train(
         task_records=task_records,
@@ -595,6 +615,17 @@ def parse_args():
     # Collect
     p.add_argument("--llm_name", default="Qwen/Qwen3-8B",
                    help="HuggingFace model ID or Ollama name")
+    p.add_argument("--model_pool", default=None,
+                   help="Base-model pool (JSON file, comma-separated names, or "
+                        "'default'). Enables semantic model embeddings on graph "
+                        "snapshots so the reward model can condition on per-node "
+                        "base-model identity. Should match the pool used to train "
+                        "the ARGDesigner policy.")
+    p.add_argument("--rm_model_features", action="store_true",
+                   help="Train/use a model-aware reward model whose node features "
+                        "include per-node base-model embeddings (1157-dim instead "
+                        "of 773-dim). Requires preference data collected with "
+                        "--model_pool set.")
     p.add_argument("--preference_dir", default=None,
                    help="Directory for preference pair shards (default: rga_data/<dataset>)")
     p.add_argument("--min_agents", type=int, default=2)

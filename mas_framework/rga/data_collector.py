@@ -220,9 +220,15 @@ class RGADataCollector:
         role_sweep_n_agents: Optional[List[int]] = None,
         role_sweep_max_combos: Optional[int] = None,
         inference_concurrency: int = 8,
+        model_pool: Optional[Dict[str, str]] = None,
     ):
         self.domain = domain
         self.llm_name = llm_name
+        # {model_name: description} pool for multi-model graphs.  Used to
+        # attach semantic model embeddings to snapshot nodes so the reward
+        # model can condition on per-node base-model identity.
+        self.model_pool = model_pool or {}
+        self._model_emb_cache: Dict[str, np.ndarray] = {}
         self.answer_checker = answer_checker
         self.get_predict = get_predict
         self.role_descriptions = role_descriptions
@@ -268,6 +274,20 @@ class RGADataCollector:
 
     def _encode_task(self, task: str) -> np.ndarray:
         return self._get_sentence_model().encode(task)
+
+    def _attach_model_embeddings(self, nx_g: nx.DiGraph) -> None:
+        """Attach semantic base-model embeddings to nodes carrying a 'model'
+        attribute (no-op without a model pool)."""
+        if not self.model_pool:
+            return
+        for n in nx_g.nodes():
+            m = nx_g.nodes[n].get("model")
+            if m and "model_embedding" not in nx_g.nodes[n]:
+                if m not in self._model_emb_cache:
+                    description = self.model_pool.get(m, m)
+                    self._model_emb_cache[m] = self._get_sentence_model().encode(
+                        f"{m}: {description}")
+                nx_g.nodes[n]["model_embedding"] = self._model_emb_cache[m]
 
     # ------------------------------------------------------------------
     # Single graph execution
@@ -319,7 +339,10 @@ class RGADataCollector:
         num_nodes = flow_graph.num_nodes
         for i, node_data in enumerate(flow_graph.x):
             role = node_data.get("role", "Unknown") if isinstance(node_data, dict) else "Unknown"
+            node_model = node_data.get("model") if isinstance(node_data, dict) else None
             nx_g.add_node(i, role=role)
+            if node_model:
+                nx_g.nodes[i]["model"] = node_model
         if flow_graph.edge_index.numel() > 0:
             for src, dst in flow_graph.edge_index.t().numpy():
                 nx_g.add_edge(int(src), int(dst))
@@ -330,6 +353,7 @@ class RGADataCollector:
             role = nx_g.nodes[n].get("role", "Unknown")
             emb = model.encode(role)
             nx_g.nodes[n]["role_embedding"] = emb
+        self._attach_model_embeddings(nx_g)
 
         return {
             "task_question": record["task"],
@@ -358,6 +382,7 @@ class RGADataCollector:
             role = nx_g.nodes[n].get("role", "Unknown")
             nx_g.nodes[n]["constraint"] = self.role_descriptions.get(role, "")
             nx_g.nodes[n]["role_embedding"] = model.encode(role)
+        self._attach_model_embeddings(nx_g)
 
         pyg_data = convert_to_pyg_graph(nx_g, task_text)
         tg = TestGraph(
@@ -558,6 +583,7 @@ class RGADataCollector:
                     if "role_embedding" not in nx_g.nodes[n]:
                         role = nx_g.nodes[n].get("role", "Unknown")
                         nx_g.nodes[n]["role_embedding"] = sent_model.encode(role)
+                self._attach_model_embeddings(nx_g)
                 raw_results.append({
                     "task_question":  record["task"],
                     "task_embedding": task_embedding,
@@ -770,6 +796,7 @@ class RGADataCollector:
                     if "role_embedding" not in nx_g.nodes[n]:
                         role = nx_g.nodes[n].get("role", "Unknown")
                         nx_g.nodes[n]["role_embedding"] = sent_model.encode(role)
+                self._attach_model_embeddings(nx_g)
                 raw_results.append({
                     "task_question":  record["task"],
                     "task_embedding": task_embedding,
