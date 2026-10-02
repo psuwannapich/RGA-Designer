@@ -6,7 +6,7 @@ RGA-Designer introduces a preference-based alignment stage for autoregressive mu
 
 ## Installation
 
-Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/psuwannapich/RGA-Designer.git
@@ -16,27 +16,14 @@ uv sync
 
 ## Environment Setup
 
-### API Keys
+### LLM Backend
 
-Copy `template.env` to `.env` and fill in your credentials:
-
-```bash
-cp template.env .env
-```
-
-```
-BASE_URL = ""   # OpenAI-compatible API base URL
-API_KEY  = ""   # API key
-```
-
-### Local LLM Backend
-
-Set `LOCAL_BASE_URL` to use any OpenAI-compatible API — a local vLLM server, Ollama, or a commercial provider. Leave it unset to use the HuggingFace transformers backend directly.
+Export `LOCAL_BASE_URL` to use any OpenAI-compatible API — a local vLLM server, Ollama, or a commercial provider. Leave it unset to use the HuggingFace transformers backend directly.
 
 ```bash
 # Option A: OpenAI-compatible API (vLLM, Ollama, OpenAI, etc.)
 export LOCAL_BASE_URL="http://localhost:8000/v1"
-export LOCAL_API_KEY="YOUR_API_KEY"
+export LOCAL_API_KEY="YOUR_API_KEY"   # default: EMPTY
 
 # Option B: HuggingFace transformers (no server needed, slower)
 # just leave LOCAL_BASE_URL unset
@@ -65,7 +52,8 @@ DATASET=gsm8k bash scripts/rga.sh
 
 1. **Collect** (1a, 1b): sample candidate graphs for each training query, execute them with
    the LLM and label each graph by task success. Queries come from `rlhf_tasks_indices` in
-   the dataset's task split, which never overlaps the test set.
+   the dataset's task split (GSM8K, MultiArith, SVAMP, MMLU), which never overlaps the
+   test set; AQuA and HumanEval use their base and finetune queries.
 2. **Correctness model** (2): a GNN trained with per-graph BCE on queries that have both
    successful and failed graphs. Mantel-Haenszel weights give a query's successful and
    failed graphs equal total weight.
@@ -118,10 +106,10 @@ RGA-Designer/
 │   ├── model.py               # ARG-Designer autoregressive model
 │   ├── cold_start.py          # ARG-Designer cold-start data generation
 │   ├── finetune.py            # ARG-Designer D_eff fine-tuning
-│   ├── rga.py                 # RGA pipeline (collect, train_rm, train_policy)
+│   ├── rga.py                 # RGA pipeline: collection, correctness model, policy
 │   ├── generate_graphs.py     # Graph sampling and Best-of-N selection
 │   ├── benchmark_pregraph.py  # LLM inference on pre-generated graphs
-│   └── evaluate_baseline.py   # Fixed-topology baselines (`uv run baseline`)
+│   └── evaluate_baseline.py   # Baselines, `uv run baseline` (CoT, fixed topologies, ...)
 ├── mas_framework/
 │   ├── agents/                # Agents, including the FinalReferTurns referee
 │   ├── graph/                 # Async multi-agent execution engine
