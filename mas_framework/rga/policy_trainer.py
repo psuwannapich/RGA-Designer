@@ -351,7 +351,8 @@ class RGAPolicyTrainer:
         lr: float = 1e-5,
         kl_coeff: float = 0.1,
         lambda_eff: float = 0.0,
-        ref_max_nodes: int = 4,
+        reward_squash: bool = False,
+        v_max: int = 4,
     ):
         self.policy = policy.to(device)
         self.reward_model = reward_model.to(device)
@@ -362,7 +363,9 @@ class RGAPolicyTrainer:
         self.device = device
         self.kl_coeff = kl_coeff
         self.lambda_eff = lambda_eff
-        self.ref_max_nodes = ref_max_nodes
+        # sigmoid(logit) of a BCE-trained correctness model, on the scale of the size term
+        self.reward_squash = reward_squash
+        self.v_max = v_max
 
         # Frozen reference policy for KL penalty
         self.ref_policy = copy.deepcopy(policy).to(device)
@@ -442,10 +445,10 @@ class RGAPolicyTrainer:
                 self.policy.train()
                 sample_logprobs, sample_rewards, sample_logprob_refs = [], [], []
 
-                # Pre-compute max possible edges for an autoregressive DAG
-                # with ref_max_nodes nodes: each node i can connect to all i
-                # prior nodes → sum(0..N-1) = N*(N-1)/2.
-                ref_max_edges = self.ref_max_nodes * (self.ref_max_nodes - 1) / 2
+                # E_max: max possible edges for an autoregressive DAG with
+                # V_max nodes: each node i can connect to all i prior nodes
+                # → sum(0..N-1) = N*(N-1)/2.
+                e_max = self.v_max * (self.v_max - 1) / 2
 
                 for _ in range(samples_per_task):
                     g, logprob_policy = sample_with_logprob(self.policy, t_emb)
@@ -456,12 +459,14 @@ class RGAPolicyTrainer:
                         logprob_ref = compute_logprob_for_graph(self.ref_policy, g, t_emb)
                         x, edge_index, batch = self._graph_to_reward_input(g, t_emb)
                         reward = self.reward_model(x, edge_index, batch)   # scalar tensor
+                        if self.reward_squash:
+                            reward = torch.sigmoid(reward)
 
                         if self.lambda_eff > 0.0:
                             num_nodes = g.number_of_nodes()
                             num_edges = g.number_of_edges()
-                            node_bonus = num_nodes / self.ref_max_nodes
-                            edge_bonus = (num_edges / ref_max_edges if ref_max_edges > 0 else 0.0)
+                            node_bonus = num_nodes / self.v_max
+                            edge_bonus = (num_edges / e_max if e_max > 0 else 0.0)
                             efficiency_bonus = 1 - node_bonus - edge_bonus
                             reward = reward + self.lambda_eff * efficiency_bonus
 

@@ -621,6 +621,16 @@ class RGADataCollector:
             "correct":   n_correct,
             "incorrect": n_incorrect,
             "skipped":   skipped,
+            # Every executed graph with its label: the correctness model's training data.
+            "graph_records": [
+                {
+                    "graph_snapshot":  r["graph_snapshot"],
+                    "task_question":   r["task_question"],
+                    "task_embedding":  r["task_embedding"],
+                    "is_correct":      bool(r["is_correct"]),
+                }
+                for r in results
+            ],
         }
         if len(results) < 2:
             return [], stats
@@ -646,11 +656,35 @@ class RGADataCollector:
             all_task_data: List[Dict] = pickle.load(fh)
 
         os.makedirs(output_dir, exist_ok=True)
+
+        # Per-task journal, so an interrupted collection resumes.
+        journal_dir = os.path.join(output_dir, "_partial")
+        os.makedirs(journal_dir, exist_ok=True)
+
+        def _journal_path(record):
+            import hashlib
+            key = hashlib.sha1(str(record["task"]).encode("utf-8")).hexdigest()[:16]
+            return os.path.join(journal_dir, f"{key}.pkl")
+
+        n_resumed = sum(1 for it in all_task_data if os.path.exists(_journal_path(it["record"])))
+        if n_resumed:
+            print(f"  Resuming: {n_resumed}/{len(all_task_data)} tasks already journalled",
+                  flush=True)
+
         sem = asyncio.Semaphore(task_concurrency)
         progress = tqdm(total=len(all_task_data), desc="RLHF collect (LLM scoring)")
 
         async def _run_one(item: Dict):
             record    = item["record"]
+            jp = _journal_path(record)
+            if os.path.exists(jp):
+                try:
+                    with open(jp, "rb") as fh:
+                        cached = pickle.load(fh)
+                    progress.update(1)
+                    return cached
+                except Exception:
+                    pass          # unreadable entry: redo the task
             candidates = item["candidates"]
             task_emb  = self._encode_task(record["task"])
             extra     = (coldstart_pool or {}).get(record["task"], [])
@@ -658,6 +692,13 @@ class RGADataCollector:
                 result = await self.score_candidates_for_task(
                     record, candidates, task_emb, extra_results=extra or None,
                 )
+            try:
+                tmp = jp + ".tmp"
+                with open(tmp, "wb") as fh:
+                    pickle.dump(result, fh)
+                os.replace(tmp, jp)
+            except Exception as e:
+                print(f"  [warn] journal write failed: {e}", flush=True)
             progress.update(1)
             return result
 
@@ -939,6 +980,16 @@ class RGADataCollector:
             "correct":   n_correct,
             "incorrect": n_incorrect,
             "skipped":   skipped,
+            # Every executed graph with its label: the correctness model's training data.
+            "graph_records": [
+                {
+                    "graph_snapshot":  r["graph_snapshot"],
+                    "task_question":   r["task_question"],
+                    "task_embedding":  r["task_embedding"],
+                    "is_correct":      bool(r["is_correct"]),
+                }
+                for r in results
+            ],
         }
 
         if len(results) < 2:
@@ -978,11 +1029,33 @@ class RGADataCollector:
         """
         os.makedirs(output_dir, exist_ok=True)
 
+        # Per-task journal, so an interrupted collection resumes.
+        journal_dir = os.path.join(output_dir, "_partial")
+        os.makedirs(journal_dir, exist_ok=True)
+
+        def _journal_path(record):
+            import hashlib
+            key = hashlib.sha1(str(record["task"]).encode("utf-8")).hexdigest()[:16]
+            return os.path.join(journal_dir, f"{key}.pkl")
+
+        n_resumed = sum(1 for r in task_records if os.path.exists(_journal_path(r)))
+        if n_resumed:
+            print(f"  Resuming: {n_resumed}/{len(task_records)} tasks already journalled")
+
         # Semaphore limits how many tasks run their LLM inference in parallel.
         sem = asyncio.Semaphore(task_concurrency)
         progress = tqdm(total=len(task_records), desc="RLHF collection")
 
         async def _run_one(record: Dict[str, Any]) -> Tuple[List[PreferencePair], dict]:
+            jp = _journal_path(record)
+            if os.path.exists(jp):
+                try:
+                    with open(jp, "rb") as fh:
+                        cached = pickle.load(fh)
+                    progress.update(1)
+                    return cached
+                except Exception:
+                    pass          # unreadable entry: redo the task
             async with sem:
                 extra = (coldstart_pool or {}).get(record["task"], [])
                 result = await self.collect_for_task(
@@ -990,6 +1063,13 @@ class RGADataCollector:
                     extra_results=extra or None,
                     num_sample_for_tasks=num_sample_for_tasks,
                 )
+            try:
+                tmp = jp + ".tmp"
+                with open(tmp, "wb") as fh:
+                    pickle.dump(result, fh)
+                os.replace(tmp, jp)
+            except Exception as e:
+                print(f"  [warn] journal write failed: {e}")
             progress.update(1)
             return result
 

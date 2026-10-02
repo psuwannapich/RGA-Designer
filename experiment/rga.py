@@ -200,6 +200,19 @@ def _filter_by_difficulty(sample, coldstart_pool, min_fail_rate: float = 0.05):
 # Phase 1a — generate ARGDesigner candidate graphs (no LLM, no vLLM)
 # ---------------------------------------------------------------------------
 
+def _rlhf_train_indices(task_split):
+    idx = task_split.get('rlhf_tasks_indices')
+    if idx:
+        test = set(task_split.get('test_indices', []))
+        leak = test.intersection(idx)
+        if leak:
+            raise ValueError(
+                f"rlhf_tasks_indices overlaps test_indices on {len(leak)} indices "
+                f"(e.g. {sorted(leak)[:5]}) — refusing to train on test data")
+        return list(idx)
+    return list(task_split['base_tasks_indices']) + list(task_split['finetune_tasks_indices'])
+
+
 def _gen_candidates(args):
     """Generate graph candidates for all tasks using ARGDesigner (GNN only, no LLM).
 
@@ -218,9 +231,9 @@ def _gen_candidates(args):
     all_records = _load_dataset(args.dataset, args.dataset_json)
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     task_split = _load_task_split(args.dataset, project_root)
-    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    train_indices = _rlhf_train_indices(task_split)
     dataset = [all_records[i] for i in train_indices]
-    print(f"Using base+finetune split: {len(dataset)}/{len(all_records)} records (test excluded)")
+    print(f"Using RLHF train pool: {len(dataset)}/{len(all_records)} records (test excluded)")
 
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
@@ -369,9 +382,9 @@ async def _collect(args):
     # Use only base + finetune splits — never touch test data
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     task_split = _load_task_split(args.dataset, project_root)
-    train_indices = task_split['base_tasks_indices'] + task_split['finetune_tasks_indices']
+    train_indices = _rlhf_train_indices(task_split)
     dataset = [all_records[i] for i in train_indices]
-    print(f"Using base+finetune split: {len(dataset)}/{len(all_records)} records (test excluded)")
+    print(f"Using RLHF train pool: {len(dataset)}/{len(all_records)} records (test excluded)")
 
     random.seed(args.seed)
     sample = random.sample(dataset, min(args.num_tasks, len(dataset)))
@@ -474,19 +487,32 @@ def _train_rm(args):
         data_src = args.preference_dir
         print(f"Training reward model on data from {data_src} ...")
 
-    train_reward_model(
-        model=model,
-        data_dir=data_src,
-        device=device,
-        epochs=args.rm_epochs,
-        lr=args.rm_lr,
-        batch_size=args.rm_batch_size,
-        val_fraction=args.rm_val_fraction,
-        save_path=args.rm_checkpoint,
-        both_wrong_weight=args.both_wrong_weight,
-        both_correct_weight=args.both_correct_weight,
-        loss_type=args.rm_loss,
-    )
+    if args.rm_loss == "per_graph_bce":
+        from mas_framework.rga.sample_trainer import train_reward_model_per_sample
+        train_reward_model_per_sample(
+            model=model,
+            data_dir=data_src,
+            device=device,
+            epochs=args.rm_epochs,
+            lr=args.rm_lr,
+            batch_size=args.rm_batch_size,
+            val_fraction=args.rm_val_fraction,
+            save_path=args.rm_checkpoint,
+        )
+    else:
+        train_reward_model(
+            model=model,
+            data_dir=data_src,
+            device=device,
+            epochs=args.rm_epochs,
+            lr=args.rm_lr,
+            batch_size=args.rm_batch_size,
+            val_fraction=args.rm_val_fraction,
+            save_path=args.rm_checkpoint,
+            both_wrong_weight=args.both_wrong_weight,
+            both_correct_weight=args.both_correct_weight,
+            loss_type=args.rm_loss,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -536,8 +562,9 @@ def _train_policy(args):
         device=device,
         lr=args.policy_lr,
         kl_coeff=args.kl_coeff,
+        reward_squash=args.reward_squash,
         lambda_eff=args.lambda_eff,
-        ref_max_nodes=args.max_agents,
+        v_max=args.max_agents,
     )
     trainer.train(
         task_records=task_records,
@@ -687,13 +714,14 @@ def parse_args():
                         "their influence so the reward model focuses on correctness "
                         "differences. Set to 0 to remove them entirely.")
     p.add_argument("--rm_loss", default="bradley_terry",
-                   choices=["bradley_terry", "bce"],
+                   choices=["bradley_terry", "bce", "per_graph_bce"],
                    help="Reward model training loss. "
                         "'bradley_terry' (default): pairwise ranking loss "
                         "L = -log σ(r_chosen - r_rejected). "
                         "'bce': per-graph binary correctness loss "
                         "L = BCE(r_chosen, chosen_is_correct) + BCE(r_rejected, rejected_is_correct). "
-                        "Use 'bce' when graph size has been removed from the preference score.")
+                        "Use 'bce' when graph size has been removed from the preference score. "
+                        "'per_graph_bce': the correctness model (mas_framework/rga/sample_trainer.py).")
 
     # Policy
     p.add_argument("--model_dir", default="",
@@ -703,12 +731,14 @@ def parse_args():
     p.add_argument("--policy_epochs", type=int, default=10)
     p.add_argument("--policy_lr", type=float, default=1e-5)
     p.add_argument("--kl_coeff", type=float, default=0.1)
+    p.add_argument("--reward_squash", action="store_true",
+                   help="Apply a sigmoid to the reward model output before adding the efficiency term.")
     p.add_argument("--lambda_eff", type=float, default=0.0,
                    help="Weight for the efficiency bonus added directly to the RM reward "
                         "during GRPO (default: 0 = disabled). "
                         "Bonus = lambda_eff * mean(node_bonus, edge_bonus) where "
-                        "node_bonus = 1 - num_nodes/ref_max_nodes and "
-                        "edge_bonus = 1 - num_edges/ref_max_edges. "
+                        "node_bonus = 1 - num_nodes/V_max and "
+                        "edge_bonus = 1 - num_edges/E_max. "
                         "Recommended range: 0.1–0.3.")
     p.add_argument("--samples_per_task", type=int, default=4,
                    help="Graphs sampled per task per GRPO step; ≥4 recommended so "

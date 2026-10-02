@@ -70,6 +70,13 @@ def parse_args():
     p.add_argument('--role_emb_path', type=str, default=None,
                    help="Path to precomputed_role_embeddings.pkl for this dataset. "
                         "Required when --best_of_n > 1.")
+    p.add_argument('--size_lambda', type=float, default=0.0,
+                   help="Weight of the size term added to the reward-model score in "
+                        "Best-of-N (same form as the policy's lambda_eff). 0 = none.")
+    p.add_argument('--reward_squash', action='store_true',
+                   help="Apply a sigmoid to the reward model output before adding the size term.")
+    p.add_argument('--v_max', type=int, default=0,
+                   help="V_max of the size term (0 = largest candidate).")
     p.add_argument('--bon_temperature', type=float, default=1.2,
                    help="Sampling temperature used when generating the N candidates. "
                         "Values > 1.0 increase diversity across candidates. (default: 1.2)")
@@ -133,7 +140,8 @@ def score_graph_with_rm(rm, nx_graph, task_emb_np: np.ndarray,
 def select_best_graph(model, task_emb_tensor: torch.Tensor, task_emb_np: np.ndarray,
                       role_description: dict, rm, role_embs: dict,
                       device: torch.device, n: int, temperature: float,
-                      question_id=None):
+                      question_id=None, size_lambda: float = 0.0,
+                      v_max: int = 0, reward_squash: bool = False):
     """Generate *n* candidate graphs, score each, return the highest-reward one.
 
     Falls back to a single graph (temperature=1.0) if all scoring attempts fail.
@@ -155,8 +163,22 @@ def select_best_graph(model, task_emb_tensor: torch.Tensor, task_emb_np: np.ndar
 
     scores = [score_graph_with_rm(rm, g, task_emb_np, role_embs, device)
               for g in candidates]
-    best_idx = int(np.argmax(scores))
-    return candidates[best_idx], scores
+
+    # Size term, as in the policy reward.
+    if size_lambda and size_lambda > 0.0:
+        if reward_squash:
+            scores = torch.sigmoid(torch.tensor(scores, dtype=torch.float64)).tolist()
+        v_max = float(v_max or max(g.number_of_nodes() for g in candidates) or 1)
+        e_max = v_max * (v_max - 1) / 2
+        sel = []
+        for g, r in zip(candidates, scores):
+            node_bonus = g.number_of_nodes() / v_max
+            edge_bonus = (g.number_of_edges() / e_max) if e_max > 0 else 0.0
+            sel.append(r + size_lambda * (1 - node_bonus - edge_bonus))
+    else:
+        sel = scores
+    best_idx = int(np.argmax(sel))
+    return candidates[best_idx], scores, best_idx
 
 
 def setup_seed(seed: int):
@@ -368,13 +390,16 @@ def main():
                     role_description, rm, role_embs,
                     rm_device, args.best_of_n,
                     args.bon_temperature, question_id=i,
+                    size_lambda=args.size_lambda,
+                    v_max=args.v_max,
+                    reward_squash=args.reward_squash,
                 )
-                g, bon_scores = result if isinstance(result, tuple) else (result, None)
+                g, bon_scores, bon_idx = result if isinstance(result, tuple) else (result, None, None)
             else:
                 graphs = generate_graph(model, emb_tensor, role_description, i)
                 if not graphs:
                     raise RuntimeError("generate_graph returned empty list")
-                g, bon_scores = graphs[0], None
+                g, bon_scores, bon_idx = graphs[0], None, None
 
             if g is None:
                 raise RuntimeError("No valid graph generated")
@@ -391,6 +416,10 @@ def main():
             }
             if bon_scores is not None:
                 rec['bon_scores'] = [round(float(s), 4) for s in bon_scores]
+                if bon_idx is not None and 0 <= bon_idx < len(bon_scores):
+                    rec['bon_selected'] = int(bon_idx)
+                    if args.reward_squash:
+                        rec['bon_prob'] = round(torch.sigmoid(torch.tensor(float(bon_scores[bon_idx]), dtype=torch.float64)).item(), 4)
                 rec['bon_n'] = args.best_of_n
             results.append(rec)
 
