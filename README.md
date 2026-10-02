@@ -108,8 +108,7 @@ RGA-Designer/
 │   ├── finetune.py            # ARG-Designer D_eff fine-tuning
 │   ├── rga.py                 # RGA pipeline: collection, correctness model, policy
 │   ├── generate_graphs.py     # Graph sampling and Best-of-N selection
-│   ├── benchmark_pregraph.py  # LLM inference on pre-generated graphs
-│   └── evaluate_baseline.py   # Baselines, `uv run baseline` (CoT, fixed topologies, ...)
+│   └── benchmark_pregraph.py  # LLM inference on pre-generated graphs
 ├── mas_framework/
 │   ├── agents/                # Agents, including the FinalReferTurns referee
 │   ├── graph/                 # Async multi-agent execution engine

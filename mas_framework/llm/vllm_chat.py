@@ -10,7 +10,6 @@ Set the environment variable USE_VLLM=1 before running any script.
 The --llm_name argument stays the same (e.g. "Qwen/Qwen3-8B").
 
     USE_VLLM=1 uv run rga --phase collect ...
-    USE_VLLM=1 uv run baseline --method cot ...
 
 Tuning knobs (env vars)
 -----------------------

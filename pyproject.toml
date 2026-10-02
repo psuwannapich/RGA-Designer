@@ -76,7 +76,6 @@ dev = [
 [project.scripts]
 cold-start = "experiment.cold_start:main_cli"
 rga        = "experiment.rga:cli"
-baseline   = "experiment.evaluate_baseline:cli"
 
 [build-system]
 requires = ["hatchling"]
