@@ -134,6 +134,12 @@ def _get_agent_name(dataset: str) -> str:
 
 
 def _get_decision_method(dataset: str) -> str:
+    """RGA_DECISION_METHOD overrides the referee; code datasets keep FinalWriteCode."""
+    override = os.environ.get("RGA_DECISION_METHOD", "").strip()
+    if override:
+        if dataset in _CODE_DATASETS and "Code" not in override:
+            return 'FinalWriteCode'
+        return override
     if dataset in _CODE_DATASETS:
         return 'FinalWriteCode'
     return 'FinalRefer'

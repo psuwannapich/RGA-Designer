@@ -10,6 +10,16 @@ from typing import Union, Literal, List
 task_prompt_tokens: ContextVar[int] = ContextVar('task_prompt_tokens', default=0)
 task_completion_tokens: ContextVar[int] = ContextVar('task_completion_tokens', default=0)
 
+# A mutable counter, so LLM calls made in per-agent child tasks are counted too
+# (a child task's .set() on the ContextVars above never reaches the parent).
+task_tokens: ContextVar = ContextVar('task_tokens', default=None)
+
+
+def new_task_tokens() -> dict:
+    counter = {'prompt': 0, 'completion': 0}
+    task_tokens.set(counter)
+    return counter
+
 class Singleton:
     _instance = None
 

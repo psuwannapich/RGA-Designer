@@ -25,7 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from mas_framework.graph.graph import TestGraph
 from mas_framework.utils.globals import (
     Cost, PromptTokens, CompletionTokens,
-    task_prompt_tokens, task_completion_tokens,
+    task_prompt_tokens, task_completion_tokens, new_task_tokens,
 )
 from experiment.utils import convert_to_pyg_graph
 from experiment.eval_checkpoint import load_checkpoint
@@ -206,9 +206,10 @@ async def main():
         # Reset task-local counters.  Because run_one is scheduled as an
         # asyncio Task by gather(), each invocation has its own ContextVar
         # copy, so this set() only affects the current task — concurrent
-        # tasks are unaffected.
+        # tasks are unaffected. new_task_tokens() also counts the agents' child tasks.
         task_prompt_tokens.set(0)
         task_completion_tokens.set(0)
+        tok = new_task_tokens()
 
         try:
             g = deserialize_graph(rec['graph'])
@@ -249,8 +250,8 @@ async def main():
                 return
 
         # Read task-local counters — accurate regardless of eval_batch_size.
-        _pt_task = task_prompt_tokens.get()
-        _ct_task = task_completion_tokens.get()
+        _pt_task = tok['prompt'] or task_prompt_tokens.get()
+        _ct_task = tok['completion'] or task_completion_tokens.get()
 
         raw = result[0] if isinstance(result, list) and result else result
         predicted, is_solved = evaluate_prediction(args.dataset, raw, true_answer)

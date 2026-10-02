@@ -72,6 +72,12 @@ TASK_SPLIT_RAW="${TASK_SPLIT_PATHS[$DATASET_IDX]}"
 MAX_AGENTS="${MAX_AGENTS:-${DATASET_MAX_AGENTS[$DATASET_IDX]}}"
 DECISION="${DECISION_METHODS[$DATASET_IDX]}"
 
+# Agent harness: fixed referee, few-shot demos as turns, reply cap.
+export RGA_DECISION_METHOD="${RGA_DECISION_METHOD:-FinalReferTurns}"
+export RGA_SOLVER_FEWSHOT="${RGA_SOLVER_FEWSHOT:-turns}"
+export MAX_AGENT_TOKENS="${MAX_AGENT_TOKENS:-2048}"
+if [[ "$DECISION" != "FinalWriteCode" ]]; then DECISION="$RGA_DECISION_METHOD"; fi
+
 # ---- Model configuration ----------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
