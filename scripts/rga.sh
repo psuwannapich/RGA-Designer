@@ -100,8 +100,16 @@ RLHF_NUM_TASKS="${RLHF_NUM_TASKS:-100}"
 PREFERENCE_ROOT="${PREFERENCE_ROOT:-rga_data}"
 MIN_AGENTS="${MIN_AGENTS:-2}"
 W_CORRECT="${W_CORRECT:-0.6}"
-W_SIZE="${W_SIZE:-0.3}"
-W_EDGE="${W_EDGE:-0.1}"
+# Split reward (RGA-Designer): the correctness model predicts task completion only, and
+# graph size enters at scoring time with lambda_size in GRPO and Best-of-N.
+RM_LOSS="${RM_LOSS:-per_graph_bce}"
+LAMBDA_EFF="${LAMBDA_EFF:-0.6}"
+SIZE_LAMBDA="${SIZE_LAMBDA:-0.6}"
+REWARD_SQUASH="${REWARD_SQUASH:-1}"
+SQUASH_FLAG=""; [[ "$REWARD_SQUASH" == "1" ]] && SQUASH_FLAG="--reward_squash"
+# No size term in the collected preference labels (it enters at scoring time instead).
+W_SIZE="${W_SIZE:-0}"
+W_EDGE="${W_EDGE:-0}"
 PAIR_MARGIN="${PAIR_MARGIN:-0.05}"
 PRUNING_RATIO="${PRUNING_RATIO:-0.25}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2}"
@@ -253,7 +261,8 @@ else
         --rm_hidden_dim "$RM_HIDDEN_DIM" --rm_output_dim "$RM_OUTPUT_DIM" \
         --rm_val_fraction "$RM_VAL_FRACTION" \
         --both_wrong_weight "$BOTH_WRONG_WEIGHT" \
-        --both_correct_weight "$BOTH_CORRECT_WEIGHT"
+        --both_correct_weight "$BOTH_CORRECT_WEIGHT" \
+        --rm_loss "$RM_LOSS"
 
     mark_done stage2_train_rm
 fi
@@ -273,7 +282,8 @@ else
         --num_tasks "$POLICY_NUM_TASKS" \
         --policy_epochs "$POLICY_EPOCHS" --policy_lr "$POLICY_LR" \
         --kl_coeff "$KL_COEFF" --samples_per_task "$SAMPLES_PER_TASK" \
-        --grad_accum_steps "$GRAD_ACCUM_STEPS" --seed "$SEED"
+        --grad_accum_steps "$GRAD_ACCUM_STEPS" --seed "$SEED" \
+        --lambda_eff "$LAMBDA_EFF" $SQUASH_FLAG
 
     mark_done stage3_train_policy
 fi
@@ -289,8 +299,9 @@ BON_FLAGS=""
 if [[ "${BEST_OF_N:-1}" -gt 1 ]]; then
     ROLE_EMB_FILE="$COLD_START_DIR/precomputed_role_embeddings.pkl"
     if [[ -f "$RM_CHECKPOINT" && -f "$ROLE_EMB_FILE" ]]; then
-        BON_FLAGS="--best_of_n $BEST_OF_N --bon_temperature $BON_TEMPERATURE --rm_checkpoint $RM_CHECKPOINT --role_emb_path $ROLE_EMB_FILE"
-        echo "  [BoN] N=$BEST_OF_N  temperature=$BON_TEMPERATURE"
+        # V_max = MAX_AGENTS, as in the policy reward.
+        BON_FLAGS="--best_of_n $BEST_OF_N --bon_temperature $BON_TEMPERATURE --rm_checkpoint $RM_CHECKPOINT --role_emb_path $ROLE_EMB_FILE --size_lambda $SIZE_LAMBDA --v_max $MAX_AGENTS $SQUASH_FLAG"
+        echo "  [BoN] N=$BEST_OF_N  temperature=$BON_TEMPERATURE  size_lambda=$SIZE_LAMBDA  V_max=$MAX_AGENTS"
     else
         echo "  [BoN] WARNING: RM or role embeddings missing — BoN disabled"
     fi

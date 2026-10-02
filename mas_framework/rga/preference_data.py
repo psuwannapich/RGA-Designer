@@ -439,3 +439,65 @@ class PreferencePairDataset(Dataset):
             "chosen_is_correct": torch.stack([item["chosen_is_correct"] for item in batch]),
             "rejected_is_correct": torch.stack([item["rejected_is_correct"] for item in batch]),
         }
+
+
+class GraphSampleDataset(Dataset):
+    """One row per executed graph, labelled by task completion: the correctness model's
+    training data. Read from the collector's per-task journals
+    (rga_data/<ds>/_partial/*.pkl -> graph_records), not from the pair shards, which
+    duplicate graphs and drop tasks without a contrasting outcome.
+
+    preference_dir: one collection dir, or a list of them (global correctness model).
+    mixed_only: keep only tasks whose graphs include both outcomes.
+    """
+
+    def __init__(self, preference_dir, verbose: bool = True, mixed_only: bool = False):
+        import glob as _glob
+        self._samples: List[Tuple[Any, Any, bool]] = []   # (snapshot, task_emb, label)
+        self._task_of: List[str] = []                    # task id per sample
+        dirs = [preference_dir] if isinstance(preference_dir, (str, os.PathLike)) else list(preference_dir)
+        for d in dirs:
+            for path in sorted(_glob.glob(os.path.join(str(d), "_partial", "*.pkl"))):
+                with open(path, "rb") as fh:
+                    _, stats = pickle.load(fh)
+                for r in (stats or {}).get("graph_records") or []:
+                    self._samples.append((r["graph_snapshot"], r["task_embedding"], bool(r["is_correct"])))
+                    self._task_of.append(str(r["task_question"])[:200])
+
+        if mixed_only:
+            outcomes = {}
+            for t, (_, _, y) in zip(self._task_of, self._samples):
+                outcomes.setdefault(t, set()).add(y)
+            keep = [i for i, t in enumerate(self._task_of) if len(outcomes[t]) == 2]
+            if verbose:
+                nt = sum(1 for v in outcomes.values() if len(v) == 2)
+                print(f"  mixed_only: kept {nt}/{len(outcomes)} questions with disagreeing "
+                      f"candidates ({len(keep)}/{len(self._samples)} graphs)")
+            self._samples = [self._samples[i] for i in keep]
+            self._task_of = [self._task_of[i] for i in keep]
+        if verbose:
+            pos = sum(1 for _, _, y in self._samples if y)
+            n = len(self._samples)
+            print(f"  GraphSampleDataset: {n} graphs from {len(dirs)} dir(s), "
+                  f"{pos} correct / {n - pos} incorrect")
+
+    def task_ids(self) -> List[str]:
+        """Task id per sample, aligned with __getitem__ order."""
+        return list(self._task_of)
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        snap, task_emb, label = self._samples[idx]
+        return {
+            "graph": snap.to_pyg(task_emb),
+            "is_correct": torch.tensor(label, dtype=torch.float32),
+        }
+
+    @staticmethod
+    def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
+        return {
+            "graph": Batch.from_data_list([b["graph"] for b in batch]),
+            "is_correct": torch.stack([b["is_correct"] for b in batch]),
+        }
