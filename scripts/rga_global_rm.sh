@@ -49,6 +49,11 @@ TASK_SPLIT_PATHS=(
 DATASET_MAX_AGENTS=(4 4 4 4 5 6)
 DECISION_METHODS=(FinalRefer FinalRefer FinalRefer FinalRefer FinalWriteCode FinalRefer)
 
+# Agent harness: fixed referee, few-shot demos as turns, reply cap.
+export RGA_DECISION_METHOD="${RGA_DECISION_METHOD:-FinalReferTurns}"
+export RGA_SOLVER_FEWSHOT="${RGA_SOLVER_FEWSHOT:-turns}"
+export MAX_AGENT_TOKENS="${MAX_AGENT_TOKENS:-2048}"
+
 # ---- Model configuration ----------------------------------------------------
 HF_MODEL="${HF_MODEL:-Qwen/Qwen3-4B}"
 DISABLE_THINKING="${DISABLE_THINKING:-1}"
@@ -172,6 +177,7 @@ for i in "${!DATASETS[@]}"; do
     DS_JSON="$PROJECT_ROOT/${DATASET_JSONS[$i]}"
     TASK_SPLIT_RAW="${TASK_SPLIT_PATHS[$i]}"
     DECISION="${DECISION_METHODS[$i]}"
+    if [[ "$DECISION" != "FinalWriteCode" ]]; then DECISION="$RGA_DECISION_METHOD"; fi
 
     MODEL_DIR="$PROJECT_ROOT/${MODEL_SLUG}/${CHECKPOINT_ROOT}/${DS}"
     POLICY_CHECKPOINT="$PROJECT_ROOT/${MODEL_SLUG}/${POLICY_ROOT}/${RUN_NAME}/${DS}/policy_rga_global_rm.pth"

@@ -1,3 +1,5 @@
+import asyncio
+import re
 from typing import List, Any, Dict, Optional
 
 from mas_framework.graph.node import Node
@@ -59,7 +61,9 @@ class FinalWriteCode(Node):
         """ To be overriden by the descendant class """
         """ Use the processed input to get the result """
   
-        system_prompt, user_prompt = self._process_inputs(input, spatial_info, temporal_info)
+        # _process_inputs runs the candidate code; keep it off the event loop.
+        system_prompt, user_prompt = await asyncio.to_thread(
+            self._process_inputs, input, spatial_info, temporal_info)
         message = [{'role':'system','content':system_prompt},{'role':'user','content':user_prompt}]
         response = await self.llm.agen(message)
         return response
@@ -188,3 +192,59 @@ class FinalMajorVote(Node):
                 max_output = processed_output
                 max_output_num = output_num[processed_output]
         return max_output
+
+
+# FinalReferTurns: the stock FinalRefer glues its few-shot demo onto the live task, and
+# small models copy the demo's answer. Here the demo is its own user/assistant turn.
+def _split_few_shot(text: str):
+    """Split a "Q:... A:..." demo into (question, answer); (None, None) if malformed."""
+    if not text:
+        return None, None
+    m = re.search(r"^\s*Q\s*:(.*?)^\s*A\s*:(.*)$", text, re.S | re.M)
+    if not m:
+        return None, None
+    q, a = m.group(1).strip(), m.group(2).strip()
+    return (q, a) if q and a else (None, None)
+
+
+@AgentRegistry.register('FinalReferTurns')
+class FinalReferTurns(Node):
+    def __init__(self, id: Optional[str] = None, domain: str = "", llm_name: str = "", agent_name: str = ""):
+        super().__init__(id, agent_name or type(self).__name__, domain, llm_name)
+        self.llm = LLMRegistry.get(llm_name)
+        self.prompt_set = PromptSetRegistry.get(domain)
+
+    def _spatial_str(self, spatial_info: Dict[str, Any]) -> str:
+        out = ""
+        for nid, info in spatial_info.items():
+            out += nid + ": " + info['output'] + "\n\n"
+        return out
+
+    def _process_inputs(self, raw_inputs: Dict[str, str], spatial_info: Dict[str, Any],
+                        temporal_info: Dict[str, Any], **kwargs) -> List[Any]:
+        msgs = self._build_messages(raw_inputs, spatial_info)
+        system = next((m['content'] for m in msgs if m['role'] == 'system'), "")
+        user = msgs[-1]['content'] if msgs else ""
+        return system, user
+
+    def _build_messages(self, raw_inputs: Dict[str, str], spatial_info: Dict[str, Any]) -> List[Dict[str, str]]:
+        role = self.prompt_set.get_decision_role()
+        constraint = self.prompt_set.get_decision_constraint()
+        messages = [{'role': 'system', 'content': f"{role}.\n {constraint}"}]
+
+        q, a = _split_few_shot(self.prompt_set.get_decision_few_shot())
+        if q and a:
+            messages.append({'role': 'user', 'content': q})
+            messages.append({'role': 'assistant', 'content': a})
+
+        user = (f"The task is:\n\n {raw_inputs['task']}.\n"
+                f" At the same time, the output of other agents is as follows:\n\n"
+                f"{self._spatial_str(spatial_info)}")
+        messages.append({'role': 'user', 'content': user})
+        return messages
+
+    def _execute(self, input: Dict[str, str], spatial_info: Dict[str, Any], temporal_info: Dict[str, Any], **kwargs):
+        return self.llm.gen(self._build_messages(input, spatial_info))
+
+    async def _async_execute(self, input: Dict[str, str], spatial_info: Dict[str, Any], temporal_info: Dict[str, Any], **kwargs):
+        return await self.llm.agen(self._build_messages(input, spatial_info))

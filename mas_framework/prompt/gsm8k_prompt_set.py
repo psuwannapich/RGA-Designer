@@ -202,6 +202,11 @@ class GSM8KPromptSet(PromptSet):
         return "natural language"
 
     @staticmethod
+    def get_answer_few_shot(role="Mathematical Analyst"):
+        """The role's few-shot demo on its own (for RGA_SOLVER_FEWSHOT=turns)."""
+        return FEW_SHOT_DATA.get(role, "")
+
+    @staticmethod
     def get_answer_prompt(question,role="Mathematical Analyst"):
         # Format the question for the AI assistant to answer
         return f"{FEW_SHOT_DATA[role]}\n\nQ:{question}"
